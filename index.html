@@ -599,36 +599,6 @@ const runServer = async (action, payload = {}) => {
         return (
             <div className="w-full flex flex-col items-center px-4">
                 {camError && (
-                    <div className="bg-yellow-600/90 backdrop-blur-sm text-white p-3 rounded-xl mt-4 text-xs font-bold text-center w-full max-w-sm shadow-lg z-[130] fade-in">
-                        ⚠️ {camError}
-                    </div>
-                )}
-                
-                {zoomCap && !camError && (
-                    <div className="w-full max-w-[250px] mt-4 fade-in z-[130]">
-                        <div className="bg-white/10 backdrop-blur-md border border-white/20 p-3 rounded-xl flex items-center gap-3 shadow-lg">
-                            <span className="text-white text-xs font-bold whitespace-nowrap">🔍 -</span>
-                            <input type="range" min={zoomCap.min} max={zoomCap.max} step={zoomCap.step || 0.1} value={zoomVal} onChange={handleZoomChange} className="w-full h-2 bg-gray-400/50 rounded-lg appearance-none cursor-pointer accent-blue-500" />
-                            <span className="text-white text-xs font-bold whitespace-nowrap">+</span>
-                        </div>
-                    </div>
-                )}
-            </div>
-        );
-    };
-
-        return (
-            <div className="w-full flex flex-col items-center px-4">
-                <input 
-                    type="file" 
-                    accept="image/*" 
-                    capture="environment" 
-                    ref={fileInputRef}
-                    style={{ display: 'none' }}
-                    onChange={handleFileUpload}
-                />
-
-                {camError && (
                     <div className="bg-yellow-100 text-yellow-800 p-3 rounded-xl mt-4 text-xs font-bold text-center w-full max-w-sm">
                         ⚠️ {camError}
                     </div>
@@ -643,17 +613,6 @@ const runServer = async (action, payload = {}) => {
                         </div>
                     </div>
                 )}
-
-                <div className="mt-4 text-center w-full max-w-sm">
-                    <p className="text-gray-500 dark:text-gray-400 text-xs mb-2">استخدم هذا الخيار إذا كانت الكاميرا المباشرة بطيئة:</p>
-                    <button 
-                        onClick={() => fileInputRef.current && fileInputRef.current.click()}
-                        disabled={isScanningFile}
-                        className="w-full bg-indigo-600 text-white px-6 py-3 rounded-xl font-bold hover:bg-indigo-700 transition flex justify-center items-center gap-2"
-                    >
-                        {isScanningFile ? <span className="loader-sm border-t-white"></span> : "📸 التقاط صورة للرمز من الهاتف"}
-                    </button>
-                </div>
             </div>
         );
     };
