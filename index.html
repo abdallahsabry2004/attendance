@@ -229,7 +229,7 @@ const runServer = async (action, payload = {}) => {
                         
                         {step === 1 ? (
                             <form onSubmit={handleCheckId}>
-                                <label className="block text-gray-700 dark:text-gray-300 font-bold mb-2 text-sm">الرقم القومي / كود الدخول</label>
+                                <label className="block text-gray-700 dark:text-gray-300 font-bold mb-2 text-sm">الرقم القومي</label>
                                 <input type="number" value={id} onChange={e=>setId(e.target.value)} className="w-full p-3 border dark:border-gray-600 bg-white dark:bg-gray-700 dark:text-white rounded-xl mb-4 focus:ring-2 focus:ring-blue-500 outline-none transition-colors" required />
                                 <Button loading={loading} className="w-full bg-blue-600 text-white py-3 rounded-xl font-bold hover:bg-blue-700 transition shadow-md shadow-blue-200 dark:shadow-none">التالي</Button>
                             </form>
@@ -280,6 +280,26 @@ const runServer = async (action, payload = {}) => {
         const [showEditPass, setShowEditPass] = useState(false);
         const [newPass, setNewPass] = useState('');
         const [loadingPass, setLoadingPass] = useState(false);
+        
+        // إضافات جديدة لمعالجة رفع الصور من الصفحة الرئيسية
+        const [isScanningFile, setIsScanningFile] = useState(false);
+        const fileInputRef = useRef(null);
+
+        const handleFileUpload = async (e) => {
+            const file = e.target.files[0];
+            if (!file) return;
+            setIsScanningFile(true);
+            try {
+                const html5QrCode = new Html5Qrcode("file-reader-main");
+                const decodedText = await html5QrCode.scanFile(file, true);
+                handleScan(decodedText);
+            } catch (err) {
+                alert("لم يتم العثور على رمز QR في الصورة. تأكد من وضوح الصورة.");
+            } finally {
+                setIsScanningFile(false);
+                if (fileInputRef.current) fileInputRef.current.value = "";
+            }
+        };
 
         useEffect(() => {
             runServer('getStudentData', { nationalId: user.id }).then(res => {
@@ -352,12 +372,38 @@ const runServer = async (action, payload = {}) => {
 
                 <main className="px-4 max-w-lg mx-auto">
                     {view === 'home' && (
-                        <div className="bg-white dark:bg-gray-800 p-8 rounded-2xl shadow-sm border border-gray-100 dark:border-gray-700 text-center fade-in">
-                            <div className="w-20 h-20 bg-blue-50 dark:bg-blue-900/20 rounded-full flex items-center justify-center mx-auto mb-4">
-                                <svg className="w-10 h-10 text-blue-600 dark:text-blue-400" fill="none" stroke="currentColor" viewBox="0 0 24 24"><path strokeLinecap="round" strokeLinejoin="round" strokeWidth="2" d="M3 9a2 2 0 012-2h.93a2 2 0 001.664-.89l.812-1.22A2 2 0 0110.07 4h3.86a2 2 0 011.664.89l.812 1.22A2 2 0 0018.07 7H19a2 2 0 012 2v9a2 2 0 01-2 2H5a2 2 0 01-2-2V9z"></path><path strokeLinecap="round" strokeLinejoin="round" strokeWidth="2" d="M15 13a3 3 0 11-6 0 3 3 0 016 0z"></path></svg>
+                        <div className="space-y-4 fade-in">
+                            {/* الخيار الأول: مسح الـ QR بالكاميرا المباشرة */}
+                            <div className="bg-white dark:bg-gray-800 p-6 rounded-2xl shadow-sm border border-gray-100 dark:border-gray-700 text-center">
+                                <div className="w-16 h-16 bg-blue-50 dark:bg-blue-900/20 rounded-full flex items-center justify-center mx-auto mb-4">
+                                    <svg className="w-8 h-8 text-blue-600 dark:text-blue-400" fill="none" stroke="currentColor" viewBox="0 0 24 24"><path strokeLinecap="round" strokeLinejoin="round" strokeWidth="2" d="M3 9a2 2 0 012-2h.93a2 2 0 001.664-.89l.812-1.22A2 2 0 0110.07 4h3.86a2 2 0 011.664.89l.812 1.22A2 2 0 0018.07 7H19a2 2 0 012 2v9a2 2 0 01-2 2H5a2 2 0 01-2-2V9z"></path><path strokeLinecap="round" strokeLinejoin="round" strokeWidth="2" d="M15 13a3 3 0 11-6 0 3 3 0 016 0z"></path></svg>
+                                </div>
+                                <h3 className="font-bold text-lg mb-2 text-gray-800 dark:text-gray-100">تسجيل الحضور بالكاميرا</h3>
+                                <button onClick={()=>setShowScanner(true)} className="w-full bg-blue-600 text-white py-4 rounded-xl font-bold shadow-lg shadow-blue-200 dark:shadow-none active:scale-95 transition">فتح الكاميرا المباشرة للمسح</button>
                             </div>
-                            <h3 className="font-bold text-lg mb-2 text-gray-800 dark:text-gray-100">تسجيل الحضور</h3>
-                            <button onClick={()=>setShowScanner(true)} className="w-full bg-blue-600 text-white py-4 rounded-xl font-bold shadow-lg shadow-blue-200 dark:shadow-none active:scale-95 transition">فتح الكاميرا والمسح</button>
+
+                            {/* الخيار الثاني: رفع صورة */}
+                            <div className="bg-white dark:bg-gray-800 p-6 rounded-2xl shadow-sm border border-gray-100 dark:border-gray-700 text-center">
+                                <input type="file" accept="image/*" capture="environment" ref={fileInputRef} style={{ display: 'none' }} onChange={handleFileUpload} />
+                                <div id="file-reader-main" style={{display: 'none'}}></div>
+                                <h3 className="font-bold text-gray-800 dark:text-gray-100 mb-2">الكاميرا لا تمسح الرمز؟</h3>
+                                <button onClick={() => fileInputRef.current && fileInputRef.current.click()} disabled={isScanningFile} className="w-full bg-indigo-600 text-white py-3 rounded-xl font-bold hover:bg-indigo-700 transition shadow-md flex justify-center items-center gap-2">
+                                    {isScanningFile ? <span className="loader-sm border-t-white"></span> : "📸 التقاط صورة للرمز من الهاتف"}
+                                </button>
+                            </div>
+
+                            {/* الخيار الثالث: الإدخال اليدوي */}
+                            <div className="bg-white dark:bg-gray-800 p-6 rounded-2xl shadow-sm border border-gray-100 dark:border-gray-700 text-center">
+                                <h3 className="font-bold text-gray-800 dark:text-gray-100 mb-3">إدخال الرقم السري يدوياً</h3>
+                                <div className="flex gap-2">
+                                    <input type="number" id="homeManualPinInput" placeholder="رقم الجلسة (6 أرقام)" className="flex-1 bg-gray-50 dark:bg-gray-900 text-gray-800 dark:text-white border border-gray-300 dark:border-gray-600 rounded-xl p-3 text-center tracking-widest font-bold outline-none focus:border-blue-500" />
+                                    <button onClick={() => {
+                                        const pin = document.getElementById('homeManualPinInput').value;
+                                        if(pin && pin.length >= 4) handleScan(pin);
+                                        else alert('يرجى إدخال الرقم بشكل صحيح');
+                                    }} className="bg-blue-600 text-white px-6 rounded-xl font-bold hover:bg-blue-700 transition">تسجيل</button>
+                                </div>
+                            </div>
                         </div>
                     )}
 
@@ -449,39 +495,15 @@ const runServer = async (action, payload = {}) => {
                 </Modal>
                 
                 {showScanner && (
-                     <div className="fixed inset-0 z-[120] bg-black flex flex-col items-center justify-start pt-10 overflow-y-auto">
-                         <div className="text-white font-bold mb-4 bg-white/20 px-4 py-1 rounded-full backdrop-blur-sm">وجه الكاميرا نحو الرمز</div>
+                     <div className="fixed inset-0 z-[120] bg-black flex flex-col items-center justify-center p-4">
+                         <div className="text-white font-bold mb-6 bg-white/20 px-6 py-2 rounded-full backdrop-blur-sm shadow-lg">وجه الكاميرا نحو الرمز</div>
                          
-                         <div id="reader" className="w-full max-w-sm bg-black rounded-2xl overflow-hidden shadow-2xl border-4 border-white/30 min-h-[250px] relative">
+                         <div id="reader" className="w-full max-w-sm bg-black rounded-2xl overflow-hidden shadow-2xl border-4 border-white/30 min-h-[250px] relative mb-4">
                          </div>
-                         <div id="file-reader" style={{display: 'none'}}></div>
                          
                          <ScannerController onScan={handleScan} />
 
-                         {/* خانة إدخال الكود اليدوي بعد التعديل */}
-                         <div className="mt-6 w-full max-w-sm px-4 fade-in z-[130]">
-                             <div className="bg-white dark:bg-gray-800 border border-gray-200 dark:border-gray-700 p-4 rounded-2xl shadow-sm">
-                                 <p className="text-gray-600 dark:text-gray-300 text-xs text-center mb-3">الكاميرا لا تعمل؟ أدخل الرقم السري للجلسة المكتوب أسفل الـ QR:</p>
-                                 <div className="flex gap-2">
-                                     <input 
-                                        type="number" 
-                                        id="manualPinInput"
-                                        placeholder="رقم الجلسة (6 أرقام)" 
-                                        className="flex-1 bg-gray-50 dark:bg-gray-900 text-gray-800 dark:text-white border border-gray-300 dark:border-gray-600 rounded-xl p-3 text-center tracking-widest font-bold outline-none focus:border-blue-500"
-                                     />
-                                     <button 
-                                        onClick={() => {
-                                            const pin = document.getElementById('manualPinInput').value;
-                                            if(pin && pin.length >= 4) handleScan(pin);
-                                            else alert('يرجى إدخال الرقم بشكل صحيح');
-                                        }}
-                                        className="bg-blue-600 text-white px-6 rounded-xl font-bold hover:bg-blue-700 transition"
-                                     >تسجيل</button>
-                                 </div>
-                             </div>
-                         </div>
-
-                         <button onClick={()=>setShowScanner(false)} className="mt-6 mb-10 bg-red-600/80 text-white px-10 py-3 rounded-full font-bold shadow-lg hover:bg-red-700 transition">إلغاء و إغلاق</button>
+                         <button onClick={()=>setShowScanner(false)} className="mt-8 bg-red-600/90 text-white px-10 py-3 rounded-full font-bold shadow-lg hover:bg-red-700 transition z-[130]">إلغاء و إغلاق</button>
                      </div>
                 )}
 
@@ -508,9 +530,7 @@ const runServer = async (action, payload = {}) => {
         const [zoomCap, setZoomCap] = useState(null);
         const [zoomVal, setZoomVal] = useState(1);
         const [camError, setCamError] = useState('');
-        const [isScanningFile, setIsScanningFile] = useState(false);
         const trackRef = useRef(null);
-        const fileInputRef = useRef(null);
 
         useEffect(() => {
             let scanner;
@@ -551,15 +571,13 @@ const runServer = async (action, payload = {}) => {
                             console.warn("Zoom not supported", zoomErr);
                         }
                     }, 1000);
-
                 } catch (err) {
                     console.warn("Camera blocked or unavailable, using fallback.", err);
                     if (isMounted) {
-                        setCamError('الكاميرا المباشرة غير متاحة حالياً. يرجى استخدام زر التقاط الصورة أدناه.');
+                        setCamError('الكاميرا المباشرة غير متاحة حالياً. يرجى إغلاق هذه النافذة واستخدام خيار التقاط الصورة أو الإدخال اليدوي.');
                     }
                 }
             };
-
             setTimeout(startCamera, 500);
 
             return () => { 
@@ -578,21 +596,26 @@ const runServer = async (action, payload = {}) => {
             } catch(e) {}
         };
 
-        const handleFileUpload = async (e) => {
-            const file = e.target.files[0];
-            if (!file) return;
-            setIsScanningFile(true);
-            try {
-                const html5QrCode = new Html5Qrcode("file-reader");
-                const decodedText = await html5QrCode.scanFile(file, true);
-                onScan(decodedText);
-            } catch (err) {
-                alert("لم يتم العثور على رمز QR في الصورة. تأكد من وضوح الصورة.");
-            } finally {
-                setIsScanningFile(false);
-                if (fileInputRef.current) fileInputRef.current.value = "";
-            }
-        };
+        return (
+            <div className="w-full flex flex-col items-center px-4">
+                {camError && (
+                    <div className="bg-yellow-600/90 backdrop-blur-sm text-white p-3 rounded-xl mt-4 text-xs font-bold text-center w-full max-w-sm shadow-lg z-[130] fade-in">
+                        ⚠️ {camError}
+                    </div>
+                )}
+                
+                {zoomCap && !camError && (
+                    <div className="w-full max-w-[250px] mt-4 fade-in z-[130]">
+                        <div className="bg-white/10 backdrop-blur-md border border-white/20 p-3 rounded-xl flex items-center gap-3 shadow-lg">
+                            <span className="text-white text-xs font-bold whitespace-nowrap">🔍 -</span>
+                            <input type="range" min={zoomCap.min} max={zoomCap.max} step={zoomCap.step || 0.1} value={zoomVal} onChange={handleZoomChange} className="w-full h-2 bg-gray-400/50 rounded-lg appearance-none cursor-pointer accent-blue-500" />
+                            <span className="text-white text-xs font-bold whitespace-nowrap">+</span>
+                        </div>
+                    </div>
+                )}
+            </div>
+        );
+    };
 
         return (
             <div className="w-full flex flex-col items-center px-4">
@@ -1145,14 +1168,14 @@ const runServer = async (action, payload = {}) => {
                  <h2 className="text-2xl font-bold mb-8 text-gray-800 dark:text-gray-100">إدارة المديرين والمساعدين</h2>
                  <div className="flex flex-col sm:flex-row gap-3 mb-8">
                      <input type="text" className="border-2 border-gray-100 dark:border-gray-600 dark:bg-gray-700 dark:text-white p-3 rounded-2xl flex-1 outline-none focus:border-blue-400" placeholder="الاسم (مثال: د. أحمد)" value={name} onChange={e=>setName(e.target.value)} />
-                     <input type="number" className="border-2 border-gray-100 dark:border-gray-600 dark:bg-gray-700 dark:text-white p-3 rounded-2xl flex-1 outline-none focus:border-blue-400" placeholder="الرقم القومي / الكود" value={id} onChange={e=>setId(e.target.value)} />
+                     <input type="number" className="border-2 border-gray-100 dark:border-gray-600 dark:bg-gray-700 dark:text-white p-3 rounded-2xl flex-1 outline-none focus:border-blue-400" placeholder="الرقم القومي" value={id} onChange={e=>setId(e.target.value)} />
                      <input type="text" className="border-2 border-gray-100 dark:border-gray-600 dark:bg-gray-700 dark:text-white p-3 rounded-2xl flex-1 outline-none focus:border-blue-400" placeholder="كلمة المرور الافتراضية" value={password} onChange={e=>setPassword(e.target.value)} />
                      <Button loading={loadingAdd} onClick={handleAdd} className="bg-green-600 text-white px-8 rounded-2xl font-bold">إنشاء مدير</Button>
                  </div>
                  <div className="overflow-x-auto">
                     <table className="w-full text-sm text-center">
                         <thead className="text-gray-400 dark:text-gray-500 font-bold border-b dark:border-gray-700 pb-4">
-                            <tr><th className="pb-4">اسم المدير</th><th className="pb-4">الرقم القومي / الكود</th><th className="pb-4">إجراءات</th></tr>
+                            <tr><th className="pb-4">اسم المدير</th><th className="pb-4">الرقم القومي</th><th className="pb-4">إجراءات</th></tr>
                         </thead>
                         <tbody className="divide-y divide-gray-50 dark:divide-gray-700">
                             {moderators.length === 0 && <tr><td colSpan="3" className="py-10 text-gray-400">لا يوجد مديرين مسجلين</td></tr>}
