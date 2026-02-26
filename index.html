@@ -69,7 +69,7 @@
     const SUPABASE_ANON_KEY = "eyJhbGciOiJIUzI1NiIsInR5cCI6IkpXVCJ9.eyJpc3MiOiJzdXBhYmFzZSIsInJlZiI6InBldXpvaGNobmtwY2Vzb2F0amR6Iiwicm9sZSI6ImFub24iLCJpYXQiOjE3NzIxMDM2MDYsImV4cCI6MjA4NzY3OTYwNn0.TFkjH9bRs5Rxa6gYvBlFpRXmAU28rri-RzeXH59gxQI";
     const supabase = window.supabase.createClient(SUPABASE_URL, SUPABASE_ANON_KEY);
 
-// --- دالة الاتصال الجديدة (runServer) الموحدة ---
+// --- دالة الاتصال الجديدة (runServer) الشاملة 100% ---
     const runServer = async (action, payload = {}) => {
       try {
         switch (action) {
@@ -78,37 +78,20 @@
           // 1. نظام تسجيل الدخول وتغيير كلمة المرور
           // ==========================================
           case 'login': {
-            const { data, error } = await supabase
-              .from('users_data')
-              .select('*')
-              .eq('national_id', payload.nationalId)
-              .maybeSingle(); 
-              
+            const { data, error } = await supabase.from('users_data').select('*').eq('national_id', payload.nationalId).maybeSingle(); 
             if (error || !data) return { status: 'error', message: 'الرقم القومي غير مسجل' };
-            
             if (!payload.password) {
-                if (!data.password || data.password.trim() === '') {
-                    return { status: 'create_password', role: data.role, name: data.full_name };
-                }
+                if (!data.password || data.password.trim() === '') return { status: 'create_password', role: data.role, name: data.full_name };
                 return { status: 'require_password', role: data.role, name: data.full_name };
             }
-
-            if (data.password !== payload.password) {
-                return { status: 'error', message: 'كلمة المرور غير صحيحة' };
-            }
-            
+            if (data.password !== payload.password) return { status: 'error', message: 'كلمة المرور غير صحيحة' };
             return { status: 'success', role: data.role, name: data.full_name };
           }
 
           case 'registerPassword':
           case 'changePassword': {
-            const { error } = await supabase
-              .from('users_data')
-              .update({ password: payload.newPassword })
-              .eq('national_id', payload.nationalId);
-              
+            const { error } = await supabase.from('users_data').update({ password: payload.newPassword }).eq('national_id', payload.nationalId);
             if (error) return { status: 'error', message: 'حدث خطأ أثناء حفظ كلمة المرور' };
-            
             if(action === 'registerPassword') {
                const { data } = await supabase.from('users_data').select('role, full_name').eq('national_id', payload.nationalId).single();
                return { status: 'success', message: 'تم الحفظ', role: data.role, name: data.full_name };
@@ -116,15 +99,18 @@
             return { status: 'success', message: 'تم تحديث كلمة المرور بنجاح' };
           }
 
+          case 'changeModeratorPassword': {
+            const { error } = await supabase.from('users_data').update({ password: payload.newPassword }).eq('national_id', payload.nationalId).in('role', ['admin', 'moderator']);
+            if (error) return { status: 'error', message: 'المدير غير موجود' };
+            return { status: 'success', message: 'تم تحديث كلمة المرور بنجاح' };
+          }
+
           // ==========================================
           // 2. تسجيل الحضور (مسح الـ QR)
           // ==========================================
           case 'scanAttendance': {
-            const { data, error } = await supabase.rpc('scan_attendance_secure', {
-              p_national_id: payload.nationalId,
-              p_qr_code: payload.qrData
-            });
-            if (error) { console.error(error); return { status: 'error', message: 'حدث خطأ في قراءة الرمز' }; }
+            const { data, error } = await supabase.rpc('scan_attendance_secure', { p_national_id: payload.nationalId, p_qr_code: payload.qrData });
+            if (error) return { status: 'error', message: 'حدث خطأ في قراءة الرمز' };
             return data; 
           }
 
@@ -132,11 +118,7 @@
           // 3. شاشات الطالب (بيانات، سجل، إنذارات)
           // ==========================================
           case 'getStudentData': {
-            const { data, error } = await supabase
-              .from('users_data')
-              .select('id, course_enrollments(courses(course_name))')
-              .eq('national_id', payload.nationalId)
-              .single();
+            const { data, error } = await supabase.from('users_data').select('id, course_enrollments(courses(course_name))').eq('national_id', payload.nationalId).single();
             if (error || !data) return { status: 'error', message: 'خطأ في جلب المقررات' };
             const courses = data.course_enrollments.map(e => e.courses.course_name);
             return { status: 'success', courses: courses };
@@ -145,25 +127,18 @@
           case 'getStudentHistory': {
             const { data: student } = await supabase.from('users_data').select('id').eq('national_id', payload.nationalId).single();
             const { data: course } = await supabase.from('courses').select('id').eq('university', payload.uni).eq('course_name', payload.course).single();
-            
             if (!student || !course) return { status: 'error', message: 'بيانات غير موجودة' };
 
             const { data: sessions } = await supabase.from('sessions').select('id, session_name, created_at').eq('course_id', course.id).order('created_at', { ascending: true });
             const { data: attendance } = await supabase.from('attendance_logs').select('session_id, scanned_at, status').eq('student_id', student.id);
             
             let presentCount = 0; let absentCount = 0; let formattedSessions = [];
-
             (sessions || []).forEach(s => {
                 const record = (attendance || []).find(a => a.session_id === s.id);
                 const isPresent = !!record;
                 if (isPresent) presentCount++; else absentCount++;
                 const dateObj = new Date(isPresent ? record.scanned_at : s.created_at);
-                formattedSessions.push({
-                    name: s.session_name,
-                    status: isPresent ? 'حضور' : 'غياب',
-                    time: dateObj.toLocaleString('ar-EG', { timeZone: 'Africa/Cairo' }),
-                    color: isPresent ? 'green' : 'red'
-                });
+                formattedSessions.push({ name: s.session_name, status: isPresent ? 'حضور' : 'غياب', time: dateObj.toLocaleString('ar-EG', { timeZone: 'Africa/Cairo' }), color: isPresent ? 'green' : 'red' });
             });
             return { status: 'success', data: { sessions: formattedSessions, presentCount, absentCount } };
           }
@@ -171,14 +146,12 @@
           case 'getStudentWarnings': {
             const { data: student } = await supabase.from('users_data').select('id').eq('national_id', payload.nationalId).single();
             if(!student) return { status: 'success', warnings: [] };
-
             const { data: enrollments } = await supabase.from('course_enrollments').select('course_id, courses(course_name)').eq('student_id', student.id);
             if(!enrollments || enrollments.length === 0) return { status: 'success', warnings: [] };
 
             const courseIds = enrollments.map(e => e.course_id);
             const { data: allSessions } = await supabase.from('sessions').select('id, course_id').in('course_id', courseIds);
             const { data: allAttendance } = await supabase.from('attendance_logs').select('session_id').eq('student_id', student.id);
-            
             const attendedSessionIds = new Set((allAttendance || []).map(a => a.session_id));
             let warnings = [];
 
@@ -191,68 +164,82 @@
             return { status: 'success', warnings };
           }
 
-         // ==========================================
-          // 4. أوامر المدير (Admin Actions) - النسخة الكاملة
+          // ==========================================
+          // 4. أوامر الإدارة الشاملة (Admin Actions)
           // ==========================================
           case 'adminAction': {
               const { type, role, name, uni, course, courseName } = payload;
               
-              // البحث عن المعرف (ID) الخاص بالمدير الحالي
               let adminUuid = null;
               if (name) {
                   const { data: uData } = await supabase.from('users_data').select('id').eq('full_name', name).limit(1).single();
                   if (uData) adminUuid = uData.id;
               }
 
-              // 1. جلب بيانات لوحة التحكم الأساسية
+              // عرض البيانات حسب الصلاحية (المدير يرى كل شيء، المساعد يرى ما شارك فيه)
               if (type === 'getAdminData') {
-                  const { data: courses } = await supabase.from('courses').select('*');
+                  const { data: allCourses } = await supabase.from('courses').select('*');
+                  let allowedCourses = allCourses || [];
+
+                  if (role === 'moderator' && adminUuid) {
+                      const { data: mySessions } = await supabase.from('sessions').select('course_id').eq('creator_id', adminUuid);
+                      const myCourseIds = [...new Set((mySessions||[]).map(s => s.course_id))];
+                      allowedCourses = allowedCourses.filter(c => myCourseIds.includes(c.id));
+                  }
+
                   const tree = {};
-                  (courses || []).forEach(c => {
+                  allowedCourses.forEach(c => {
                       if (!tree[c.university]) tree[c.university] = [];
                       tree[c.university].push(c.course_name);
                   });
+                  
                   const { data: mods } = await supabase.from('users_data').select('national_id, full_name').eq('role', 'moderator');
                   const moderators = (mods || []).map(m => ({ name: m.full_name, id: m.national_id }));
-                  const materials = [...new Set((courses || []).map(c => c.course_name))];
+                  const materials = [...new Set((allCourses || []).map(c => c.course_name))];
 
                   return { status: 'success', data: tree, materials, moderators };
               }
 
-              // 2. إدارة المقررات
+              // إدارة المساعدين
+              if (type === 'getCourseModerators') {
+                  const { data: cData } = await supabase.from('courses').select('id').eq('university', uni).eq('course_name', course).single();
+                  if(!cData) return { status: 'success', courseModerators: [] };
+                  const { data: sessions } = await supabase.from('sessions').select('users_data(full_name)').eq('course_id', cData.id);
+                  const mods = new Set();
+                  (sessions||[]).forEach(s => { if(s.users_data && s.users_data.full_name !== 'المدير العام') mods.add(s.users_data.full_name); });
+                  return { status: 'success', courseModerators: Array.from(mods) };
+              }
+              if (type === 'addModerator') {
+                  const { error } = await supabase.from('users_data').insert({ national_id: payload.id, full_name: name, password: payload.password, role: 'moderator' });
+                  return error ? { status: 'error' } : { status: 'success' };
+              }
+              if (type === 'deleteModerator') {
+                  const { error } = await supabase.from('users_data').delete().eq('national_id', payload.id).eq('role', 'moderator');
+                  return error ? { status: 'error' } : { status: 'success' };
+              }
+
+              // إدارة المقررات
               if (type === 'addCourse') {
-                  const { error } = await supabase.from('courses').insert({
-                      university: uni,
-                      course_name: courseName,
-                      created_by: adminUuid
-                  });
+                  const { error } = await supabase.from('courses').insert({ university: uni, course_name: courseName, created_by: adminUuid });
                   if (error) return { status: 'error', message: 'المقرر موجود بالفعل أو حدث خطأ' };
                   return { status: 'success' };
               }
-
               if (type === 'deleteCourse') {
+                  // المساعد لا يمكنه حذف المقرر بالكامل، المدير العام فقط
+                  if(role !== 'admin') return { status: 'error', message: 'ليس لديك صلاحية حذف المقرر نهائياً' };
                   const { error } = await supabase.from('courses').delete().eq('university', uni).eq('course_name', courseName);
                   if (error) return { status: 'error', message: 'تعذر الحذف' };
                   return { status: 'success' };
               }
 
-              // 3. إدارة الطلاب داخل المقرر
+              // إدارة الطلاب داخل المقرر
               if (type === 'getCourseStudents') {
                   const { data: cData } = await supabase.from('courses').select('id').eq('university', uni).eq('course_name', course).single();
                   if (!cData) return { status: 'error' };
-
                   const { data: enrollments } = await supabase.from('course_enrollments').select('users_data(full_name, national_id, password)').eq('course_id', cData.id);
-                  
-                  const students = (enrollments || []).map((e, i) => ({
-                      name: e.users_data.full_name,
-                      id: e.users_data.national_id,
-                      pass: e.users_data.password,
-                      rowIndex: i
-                  })).sort((a,b) => a.name.localeCompare(b.name, 'ar'));
-
+                  const students = (enrollments || []).map((e, i) => ({ name: e.users_data.full_name, id: e.users_data.national_id, pass: e.users_data.password, rowIndex: i }));
                   return { status: 'success', students };
               }
-
               if (type === 'manageStudent') {
                   const { actionType, studentData } = payload;
                   const { data: cData } = await supabase.from('courses').select('id').eq('university', uni).eq('course_name', course).single();
@@ -260,111 +247,118 @@
 
                   if (actionType === 'add' || actionType === 'edit') {
                       let { data: uData } = await supabase.from('users_data').select('id').eq('national_id', studentData.id).maybeSingle();
-                      
                       if (!uData) {
-                          const { data: newUser, error: insErr } = await supabase.from('users_data')
-                              .insert({ national_id: studentData.id, full_name: studentData.name, password: studentData.pass || '', role: 'student' })
-                              .select('id').single();
+                          const { data: newUser, error: insErr } = await supabase.from('users_data').insert({ national_id: studentData.id, full_name: studentData.name, password: studentData.pass || '', role: 'student' }).select('id').single();
                           if(insErr) return { status: 'error', message: 'خطأ في إضافة الطالب' };
                           uData = newUser;
                       } else if (actionType === 'edit') {
                           await supabase.from('users_data').update({ full_name: studentData.name, password: studentData.pass || '' }).eq('id', uData.id);
                       }
-
                       if (actionType === 'add') {
                           await supabase.from('course_enrollments').insert({ course_id: cData.id, student_id: uData.id });
                       }
                       return { status: 'success' };
                   }
-
                   if (actionType === 'delete') {
                       const { data: uData } = await supabase.from('users_data').select('id').eq('national_id', studentData.id).single();
-                      if(uData) {
-                          await supabase.from('course_enrollments').delete().eq('course_id', cData.id).eq('student_id', uData.id);
-                      }
+                      if(uData) await supabase.from('course_enrollments').delete().eq('course_id', cData.id).eq('student_id', uData.id);
                       return { status: 'success' };
                   }
               }
 
-              // 4. إنشاء وإدارة الجلسات (الـ QR Code)
+              // إدارة الإنذارات للإدارة
+              if (type === 'getCourseWarnings') {
+                  const { warningType } = payload;
+                  const { data: cData } = await supabase.from('courses').select('id').eq('university', uni).eq('course_name', course).single();
+                  if(!cData) return { status: 'error' };
+
+                  const { data: enrollments } = await supabase.from('course_enrollments').select('users_data(full_name, national_id, id)').eq('course_id', cData.id);
+                  const { data: sessions } = await supabase.from('sessions').select('id').eq('course_id', cData.id);
+                  const { data: attendance } = await supabase.from('attendance_logs').select('student_id, session_id').in('session_id', (sessions||[]).map(s=>s.id));
+
+                  const totalSessions = (sessions||[]).length;
+                  let warnings = [];
+
+                  (enrollments||[]).forEach(e => {
+                      const stu = e.users_data;
+                      const stuAtt = (attendance||[]).filter(a => a.student_id === stu.id).length;
+                      const absentCount = totalSessions - stuAtt;
+
+                      if (warningType === 'warning' && absentCount === 3) warnings.push({ name: stu.full_name, id: stu.national_id, absentCount });
+                      else if (warningType === 'deprived' && absentCount >= 4) warnings.push({ name: stu.full_name, id: stu.national_id, absentCount });
+                  });
+                  return { status: 'success', warnings };
+              }
+
+              // الجلسات والـ QR
               if (type === 'getLastSession') {
                   const { data: cData } = await supabase.from('courses').select('id').eq('university', uni).eq('course_name', course).single();
                   if(!cData) return { status: 'success', lastSession: 'لا يوجد' };
                   const { count } = await supabase.from('sessions').select('*', { count: 'exact', head: true }).eq('course_id', cData.id);
                   return { status: 'success', lastSession: count > 0 ? "الجلسة " + count : 'لا يوجد' };
               }
-
-              if (type === 'createSession') {
-                  const { duration } = payload;
+              if (type === 'createSession' || type === 'changeQR') {
+                  const { duration, sessionNameOverride } = payload;
                   const { data: cData } = await supabase.from('courses').select('id').eq('university', uni).eq('course_name', course).single();
                   if(!cData) return { status: 'error', message: 'المقرر غير موجود' };
 
-                  const { count } = await supabase.from('sessions').select('*', { count: 'exact', head: true }).eq('course_id', cData.id);
-                  const targetSessionName = "الجلسة " + ((count || 0) + 1);
-                  
                   const pinCode = Math.floor(100000 + Math.random() * 900000).toString();
-                  const qrData = `${uni}|separator|${course}|separator|${targetSessionName}|separator|${pinCode}`;
+                  let targetSessionName = sessionNameOverride;
 
-                  const { error } = await supabase.from('sessions').insert({
-                      course_id: cData.id,
-                      session_name: targetSessionName,
-                      qr_code: qrData,
-                      pin_code: pinCode,
-                      duration_minutes: duration,
-                      creator_id: adminUuid
-                  });
-
-                  if (error) return { status: 'error', message: 'حدث خطأ في إنشاء الجلسة' };
-                  return { status: 'success', qrData, sessionName: targetSessionName, pinCode };
+                  if (type === 'createSession') {
+                      const { count } = await supabase.from('sessions').select('*', { count: 'exact', head: true }).eq('course_id', cData.id);
+                      targetSessionName = "الجلسة " + ((count || 0) + 1);
+                      const qrData = `${uni}|separator|${course}|separator|${targetSessionName}|separator|${pinCode}`;
+                      const { error } = await supabase.from('sessions').insert({ course_id: cData.id, session_name: targetSessionName, qr_code: qrData, pin_code: pinCode, duration_minutes: duration, creator_id: adminUuid });
+                      if (error) return { status: 'error', message: 'حدث خطأ في إنشاء الجلسة' };
+                      return { status: 'success', qrData, sessionName: targetSessionName, pinCode };
+                  } 
+                  
+                  if (type === 'changeQR') {
+                      const qrData = `${uni}|separator|${course}|separator|${targetSessionName}|separator|${pinCode}`;
+                      const { error } = await supabase.from('sessions').update({ duration_minutes: duration, qr_code: qrData, pin_code: pinCode, is_active: true, created_at: new Date().toISOString() }).eq('course_id', cData.id).eq('session_name', targetSessionName);
+                      if (error) return { status: 'error', message: 'حدث خطأ في تحديث الجلسة' };
+                      return { status: 'success', qrData, sessionName: targetSessionName, pinCode };
+                  }
               }
-
               if (type === 'getSessionDetails') {
                   const { data: cData } = await supabase.from('courses').select('id').eq('university', uni).eq('course_name', course).single();
                   if(!cData) return { status: 'error' };
 
-                  const { data: sessions } = await supabase.from('sessions').select('id, session_name, is_active, qr_code, created_at, users_data(full_name)').eq('course_id', cData.id);
+                  let query = supabase.from('sessions').select('id, session_name, is_active, qr_code, created_at, creator_id, users_data(full_name)').eq('course_id', cData.id);
+                  if (role === 'moderator' && adminUuid) query = query.eq('creator_id', adminUuid);
+                  const { data: sessions } = await query;
                   
                   const { count: totalStudents } = await supabase.from('course_enrollments').select('*', {count: 'exact', head: true}).eq('course_id', cData.id);
                   const { data: attendance } = await supabase.from('attendance_logs').select('session_id').in('session_id', (sessions||[]).map(s=>s.id));
 
                   let sessionStats = (sessions || []).map(s => {
                       const present = (attendance||[]).filter(a => a.session_id === s.id).length;
-                      return {
-                          session: s.session_name,
-                          present: present,
-                          absent: totalStudents - present,
-                          qrStatus: s.is_active ? 'يعمل' : 'لا يعمل',
-                          qrCode: s.qr_code,
-                          creationDate: new Date(s.created_at).toLocaleString('ar-EG', { timeZone: 'Africa/Cairo' }),
-                          creator: s.users_data ? s.users_data.full_name : 'غير معروف'
-                      };
+                      return { session: s.session_name, present: present, absent: totalStudents - present, qrStatus: s.is_active ? 'يعمل' : 'لا يعمل', qrCode: s.qr_code, creationDate: new Date(s.created_at).toLocaleString('ar-EG', { timeZone: 'Africa/Cairo' }), creator: s.users_data ? s.users_data.full_name : 'غير معروف' };
                   });
-
                   sessionStats.sort((a, b) => a.session.localeCompare(b.session, 'ar', { numeric: true }));
                   return { status: 'success', sessions: sessionStats };
               }
-
               if (type === 'toggleQR') {
-                  const { qrCode, newStatus } = payload;
-                  await supabase.from('sessions').update({ is_active: newStatus === 'يعمل' }).eq('qr_code', qrCode);
+                  await supabase.from('sessions').update({ is_active: payload.newStatus === 'يعمل' }).eq('qr_code', payload.qrCode);
                   return { status: 'success' };
               }
-
               if (type === 'deleteSession') {
                   const { sessionName } = payload;
                   const { data: cData } = await supabase.from('courses').select('id').eq('university', uni).eq('course_name', course).single();
                   if(cData) {
-                      await supabase.from('sessions').delete().eq('course_id', cData.id).eq('session_name', sessionName);
+                      let delQuery = supabase.from('sessions').delete().eq('course_id', cData.id).eq('session_name', sessionName);
+                      if (role === 'moderator' && adminUuid) delQuery = delQuery.eq('creator_id', adminUuid); // المساعد يحذف جلسته فقط
+                      await delQuery;
                   }
                   return { status: 'success' };
               }
-              
-              return { status: 'error', message: 'تم إيقاف هذا الإجراء مؤقتاً للتحديث' };
+              return { status: 'error', message: 'غير مدعوم' };
           }
-// ==========================================
+
+          // ==========================================
           // 5. التقارير وإدارة الغياب يدوياً (Reports & Attendance)
           // ==========================================
-
           case 'getCourseReport': {
             const { uni, course } = payload;
             const { data: cData } = await supabase.from('courses').select('id').eq('university', uni).eq('course_name', course).single();
@@ -375,7 +369,6 @@
             const { data: attendance } = await supabase.from('attendance_logs').select('student_id, session_id, scanned_at').in('session_id', (sessions||[]).map(s=>s.id));
 
             const headers = ["اسم الطالب", "حضور", "غياب", "الرقم القومي", ...(sessions||[]).map(s => s.session_name)];
-            
             const rows = (enrollments || []).map(e => {
                 const stu = e.users_data;
                 let present = 0; let absent = 0;
@@ -401,7 +394,6 @@
             const { data: sessions } = await supabase.from('sessions').select('id, session_name').eq('course_id', cData.id).order('created_at', { ascending: true });
             const { data: enrollments } = await supabase.from('course_enrollments').select('users_data(id, full_name, national_id)').eq('course_id', cData.id);
             
-            // جلب الحضور الذي سجله هذا المدير فقط
             let attQuery = supabase.from('attendance_logs').select('student_id, session_id, scanned_at').in('session_id', (sessions||[]).map(s=>s.id));
             if (modId) attQuery = attQuery.eq('scanned_by', modId);
             const { data: attendance } = await attQuery;
@@ -439,15 +431,7 @@
                 const stu = e.users_data;
                 const rec = (attendance||[]).find(a => a.student_id === stu.id);
                 const isPresent = !!rec;
-                return {
-                    name: stu.full_name,
-                    id: stu.national_id,
-                    status: isPresent ? 'حضور' : 'غياب',
-                    time: isPresent ? new Date(rec.scanned_at).toLocaleString('ar-EG', { timeZone: 'Africa/Cairo' }) : '-',
-                    color: isPresent ? 'green' : 'red',
-                    rowIndex: stu.id, // تم تخزين الـ UUID الخاص بالطالب هنا لتسهيل تعديل حالته
-                    rawVal: isPresent ? 'present' : ''
-                };
+                return { name: stu.full_name, id: stu.national_id, status: isPresent ? 'حضور' : 'غياب', time: isPresent ? new Date(rec.scanned_at).toLocaleString('ar-EG', { timeZone: 'Africa/Cairo' }) : '-', color: isPresent ? 'green' : 'red', rowIndex: stu.id, rawVal: isPresent ? 'present' : '' };
             }).sort((a,b) => a.name.localeCompare(b.name, 'ar'));
 
             return { status: 'success', report };
@@ -458,12 +442,7 @@
             const { data: cData } = await supabase.from('courses').select('id').eq('university', uni).eq('course_name', course).single();
             if(!cData) return { status: 'error' };
 
-            // البحث الذكي عن طريق الاسم أو الرقم القومي
-            const { data: enrollments } = await supabase.from('course_enrollments')
-                  .select('users_data!inner(id, full_name, national_id)')
-                  .eq('course_id', cData.id)
-                  .or(`full_name.ilike.%${query}%,national_id.ilike.%${query}%`, { foreignTable: 'users_data' });
-            
+            const { data: enrollments } = await supabase.from('course_enrollments').select('users_data!inner(id, full_name, national_id)').eq('course_id', cData.id).or(`full_name.ilike.%${query}%,national_id.ilike.%${query}%`, { foreignTable: 'users_data' });
             const { data: sessions } = await supabase.from('sessions').select('id, session_name').eq('course_id', cData.id).order('created_at', { ascending: true });
             const studentIds = (enrollments||[]).map(e => e.users_data.id);
             const { data: attendance } = await supabase.from('attendance_logs').select('student_id, session_id').in('session_id', (sessions||[]).map(s=>s.id)).in('student_id', studentIds);
@@ -478,14 +457,11 @@
                 });
                 return { name: stu.full_name, id: stu.national_id, present, absent, sessions: stuSessions, rowIndex: stu.id };
             });
-
             return { status: 'success', results, sessionHeaders: (sessions||[]).map(s=>s.session_name) };
           }
 
           case 'updateAttendanceCell': {
-             // تعديل الحضور يدوياً من طرف المدير
              const { uni, course, rowIndex: studentId, status, sessionName, editorName } = payload;
-             
              const { data: cData } = await supabase.from('courses').select('id').eq('university', uni).eq('course_name', course).single();
              if(!cData) return { status: 'error' };
 
@@ -499,22 +475,16 @@
              }
 
              if (status === 'present') {
-                 // إضافة حضور
-                 await supabase.from('attendance_logs').insert({
-                     session_id: sData.id,
-                     student_id: studentId,
-                     scanned_by: editorId || studentId
-                 });
-                 const nowStr = new Date().toLocaleString('ar-EG', { timeZone: 'Africa/Cairo' });
-                 return { status: 'success', newValue: `${nowStr}\n(تعديل يدوي)` };
+                 await supabase.from('attendance_logs').insert({ session_id: sData.id, student_id: studentId, scanned_by: editorId || studentId });
+                 return { status: 'success', newValue: `${new Date().toLocaleString('ar-EG', { timeZone: 'Africa/Cairo' })}\n(تعديل يدوي)` };
              } else {
-                 // حذف الحضور
                  await supabase.from('attendance_logs').delete().eq('session_id', sData.id).eq('student_id', studentId);
                  return { status: 'success', newValue: '' };
              }
           }
+
           default:
-            return { status: 'error', message: 'الإجراء غير مدعوم حالياً في النسخة الجديدة' };
+            return { status: 'error', message: 'الإجراء غير مدعوم' };
         }
       } catch (err) {
         console.error('Supabase Error:', err);
