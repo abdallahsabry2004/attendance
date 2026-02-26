@@ -1491,37 +1491,48 @@
         };
 
         const handleBatchAdd = async () => {
-            if (!batchText.trim()) return;
-            // تنسيق النص: كل سطر: الاسم الرقم القومي كلمة المرور (مفصولة بمسافة أو tab)
-            const lines = batchText.trim().split('\n');
-            const studentsToAdd = [];
-            for (let line of lines) {
-                const parts = line.trim().split(/\s+/);
-                if (parts.length >= 2) {
-                    const name = parts[0];
-                    const id = parts[1];
-                    const pass = parts[2] || ''; // اختياري
-                    studentsToAdd.push({ name, id, pass });
-                }
-            }
-            if (studentsToAdd.length === 0) {
-                showToast({ type: 'error', message: 'لا توجد بيانات صالحة' });
-                return;
-            }
-            const ok = await confirm({ title: 'تأكيد الإضافة الجماعية', message: `هل تريد إضافة ${studentsToAdd.length} طالب دفعة واحدة؟`, type: 'primary' });
-            if (!ok) return;
-            setLoading(true);
-            const res = await runServer('adminAction', { type: 'batchAddStudents', uni, course, students: studentsToAdd });
-            setLoading(false);
-            if (res.status === 'success') {
-                showToast({ type: 'success', message: res.message });
-                setShowBatchModal(false);
-                setBatchText('');
-                load();
-            } else {
-                showToast({ type: 'error', message: res.message || 'حدث خطأ' });
-            }
-        };
+    if (!batchText.trim()) return;
+    const lines = batchText.trim().split('\n');
+    const studentsToAdd = [];
+    for (let line of lines) {
+        line = line.trim();
+        if (!line) continue;
+        // البحث عن أول 14 رقم متتالي (الرقم القومي)
+        const match = line.match(/(\d{14})/);
+        if (!match) continue; // تخطي السطور التي لا تحتوي على رقم قومي صحيح
+        const nationalId = match[1];
+        const idIndex = match.index;
+        // الاسم هو كل النص قبل الرقم
+        let name = line.substring(0, idIndex).trim();
+        // ما بعد الرقم يعتبر كلمة مرور (اختياري) مع إزالة المسافات
+        let pass = line.substring(idIndex + 14).trim();
+        // إذا لم يتم إدخال كلمة مرور، نضعها فارغة
+        if (name && nationalId) {
+            studentsToAdd.push({ name, id: nationalId, pass });
+        }
+    }
+    if (studentsToAdd.length === 0) {
+        showToast({ type: 'error', message: 'لم يتم العثور على بيانات صالحة (تأكد من وجود الرقم القومي 14 رقم)' });
+        return;
+    }
+    const ok = await confirm({
+        title: 'تأكيد الإضافة الجماعية',
+        message: `هل تريد إضافة ${studentsToAdd.length} طالب دفعة واحدة؟`,
+        type: 'primary'
+    });
+    if (!ok) return;
+    setLoading(true);
+    const res = await runServer('adminAction', { type: 'batchAddStudents', uni, course, students: studentsToAdd });
+    setLoading(false);
+    if (res.status === 'success') {
+        showToast({ type: 'success', message: res.message });
+        setShowBatchModal(false);
+        setBatchText('');
+        load();
+    } else {
+        showToast({ type: 'error', message: res.message || 'حدث خطأ' });
+    }
+};
 
         const getGender = (id) => {
             if (!id || String(id).length !== 14) return 'غير محدد';
