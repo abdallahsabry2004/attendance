@@ -297,14 +297,19 @@
 
             if (type === 'deleteCourse') {
                 if (role === 'admin') {
+                    // المسؤول: حذف المقرر نهائياً -> سيتم حذف course_enrollments بسبب ON DELETE CASCADE
                     await supabaseClient.from('courses').delete().eq('university', uni).eq('course_name', courseName);
                 } else if (adminUuid) {
                     const cRes = await supabaseClient.from('courses').select('id').eq('university', uni).eq('course_name', courseName).single();
                     if (cRes.data) {
+                        // حذف جلسات هذا المدير فقط
                         await supabaseClient.from('sessions').delete().eq('course_id', cRes.data.id).eq('creator_id', adminUuid);
+                        // إزالة المدير من course_managers
                         await supabaseClient.from('course_managers').delete().eq('course_id', cRes.data.id).eq('manager_id', adminUuid);
+                        // التحقق مما إذا كان لا يزال هناك مديرون للمقرر
                         const remainingManagers = await supabaseClient.from('course_managers').select('manager_id').eq('course_id', cRes.data.id);
                         if (remainingManagers.data && remainingManagers.data.length === 0) {
+                            // إذا لم يبقَ أي مدير، يتم حذف المقرر بالكامل (ومعه enrollments)
                             await supabaseClient.from('courses').delete().eq('id', cRes.data.id);
                         }
                     }
@@ -353,11 +358,9 @@
                         duration_minutes: payload.duration, qr_code: qrData, pin_code: pinCode, is_active: true, created_at: new Date().toISOString()
                     });
                     
-                    // إذا تم توفير qrCode الأصلي، نستخدمه لتحديد الجلسة بدقة
                     if (payload.originalQrCode) {
                         query = query.eq('qr_code', payload.originalQrCode);
                     } else {
-                        // للتوافق مع الإصدارات السابقة
                         query = query.eq('course_id', cId).eq('session_name', targetSessionName);
                         if (role === 'moderator' && adminUuid) query = query.eq('creator_id', adminUuid);
                     }
@@ -421,11 +424,6 @@
                     } else if (adminUuid) {
                         await supabaseClient.from('attendance_logs').delete().eq('course_id', cRes.data.id).eq('session_name', payload.sessionName).eq('scanned_by', adminUuid);
                         await supabaseClient.from('sessions').delete().eq('course_id', cRes.data.id).eq('session_name', payload.sessionName).eq('creator_id', adminUuid);
-                        
-                        const remainingSessions = await supabaseClient.from('sessions').select('id').eq('course_id', cRes.data.id).eq('session_name', payload.sessionName);
-                        if (remainingSessions.data && remainingSessions.data.length === 0) {
-                            // لا يوجد جلسات بهذا الاسم
-                        }
                     }
                 }
                 return { status: 'success' };
@@ -515,7 +513,7 @@
             if (cRes.error) return { status: 'error' };
             const sRes = await supabaseClient.from('sessions').select('session_name').eq('course_id', cRes.data.id);
             const uniqueNames = [...new Set((sRes.data || []).map(s => s.session_name))];
-            // ترتيب أسماء الجلسات أبجدياً
+            // ترتيب أبجدي
             uniqueNames.sort((a, b) => a.localeCompare(b, 'ar', { numeric: true }));
             
             const eRes = await supabaseClient.from('course_enrollments').select('users_data(id, full_name, national_id)').eq('course_id', cRes.data.id);
@@ -548,7 +546,6 @@
             const cRes = await supabaseClient.from('courses').select('id').eq('university', uni).eq('course_name', course).single();
             if (cRes.error) return { status: 'error' };
 
-            // جلب جلسات هذا المدير فقط
             const sRes = await supabaseClient.from('sessions').select('session_name, created_at').eq('course_id', cRes.data.id).eq('creator_id', modId);
             let orderedNames = [...new Set((sRes.data||[]).map(s => s.session_name))];
             // ترتيب أبجدي
@@ -634,10 +631,18 @@
             let editorId = uRes.data ? uRes.data.id : stuId;
 
             if (status === 'present') {
-                await supabaseClient.from('attendance_logs').insert({ course_id: cRes.data.id, session_name: sessionName, student_id: stuId, scanned_by: editorId });
-                // تحديد نوع المحرر لعرضه في الرسالة
+                await supabaseClient.from('attendance_logs').insert({ 
+                    course_id: cRes.data.id, 
+                    session_name: sessionName, 
+                    student_id: stuId, 
+                    scanned_by: editorId 
+                });
+                // تحديد النص حسب دور المحرر
                 const roleLabel = editorRole === 'admin' ? 'مسؤول النظام' : 'مدير';
-                return { status: 'success', newValue: `${new Date().toLocaleString('ar-EG', {timeZone: 'Africa/Cairo'})} - (مع ${roleLabel} - تعديل يدوي)` };
+                return { 
+                    status: 'success', 
+                    newValue: `${new Date().toLocaleString('ar-EG', {timeZone: 'Africa/Cairo'})} - (مع ${roleLabel} - تعديل يدوي)` 
+                };
             } else {
                 await supabaseClient.from('attendance_logs').delete().eq('course_id', cRes.data.id).eq('session_name', sessionName).eq('student_id', stuId);
                 return { status: 'success', newValue: '' };
