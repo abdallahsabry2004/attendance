@@ -161,7 +161,7 @@
                 }
             }
 
-            await supabaseClient.from('attendance_logs').insert({ course_id: sessionData.course_id, session_name: sessionData.session_name, student_id: student.id, scanned_by: sessionData.creator_id });
+            await supabaseClient.from('attendance_logs').insert({ course_id: sessionData.course_id, session_name: sessionData.session_name, student_id: student.id, scanned_by: sessionData.creator_id, is_manual: false });
             return { status: 'success', message: 'تم تسجيل الحضور بنجاح' };
         }
 
@@ -173,7 +173,7 @@
             const allSess = await supabaseClient.from('sessions').select('session_name, created_at').eq('course_id', cRes.data.id).order('created_at', { ascending: true });
             const orderedNames = [...new Set((allSess.data || []).map(s => s.session_name))];
 
-            const attRes = await supabaseClient.from('attendance_logs').select('session_name, scanned_at, users_data!scanned_by(full_name)').eq('student_id', sRes.data.id).eq('course_id', cRes.data.id);
+            const attRes = await supabaseClient.from('attendance_logs').select('session_name, scanned_at, users_data!scanned_by(full_name), is_manual').eq('student_id', sRes.data.id).eq('course_id', cRes.data.id);
             const attendance = attRes.data || [];
 
             let presentCount = 0; let absentCount = 0; let formattedSessions = [];
@@ -184,7 +184,8 @@
                     presentCount++;
                     const dObj = new Date(record.scanned_at);
                     const manager = record.users_data ? record.users_data.full_name : '';
-                    const tStr = `${dObj.toLocaleString('ar-EG', {timeZone: 'Africa/Cairo'})} - (مع ${manager})`;
+                    const manualText = record.is_manual ? ' (تعديل يدوي)' : '';
+                    const tStr = `${dObj.toLocaleString('ar-EG', {timeZone: 'Africa/Cairo'})} - (مع ${manager}${manualText})`;
                     formattedSessions.push({ name: sName, status: 'حضور', time: tStr, color: 'green' });
                 } else {
                     absentCount++;
@@ -297,19 +298,14 @@
 
             if (type === 'deleteCourse') {
                 if (role === 'admin') {
-                    // المسؤول: حذف المقرر نهائياً -> سيتم حذف course_enrollments بسبب ON DELETE CASCADE
                     await supabaseClient.from('courses').delete().eq('university', uni).eq('course_name', courseName);
                 } else if (adminUuid) {
                     const cRes = await supabaseClient.from('courses').select('id').eq('university', uni).eq('course_name', courseName).single();
                     if (cRes.data) {
-                        // حذف جلسات هذا المدير فقط
                         await supabaseClient.from('sessions').delete().eq('course_id', cRes.data.id).eq('creator_id', adminUuid);
-                        // إزالة المدير من course_managers
                         await supabaseClient.from('course_managers').delete().eq('course_id', cRes.data.id).eq('manager_id', adminUuid);
-                        // التحقق مما إذا كان لا يزال هناك مديرون للمقرر
                         const remainingManagers = await supabaseClient.from('course_managers').select('manager_id').eq('course_id', cRes.data.id);
                         if (remainingManagers.data && remainingManagers.data.length === 0) {
-                            // إذا لم يبقَ أي مدير، يتم حذف المقرر بالكامل (ومعه enrollments)
                             await supabaseClient.from('courses').delete().eq('id', cRes.data.id);
                         }
                     }
@@ -383,6 +379,15 @@
 
                 let stats = [];
                 for(let s of (sRes.data || [])) {
+                    // التحقق من وجود المنشئ، وإذا لم يكن موجودًا نعرض "مسؤول النظام"
+                    let creatorName = 'مسؤول النظام';
+                    if (s.users_data && s.users_data.full_name) {
+                        creatorName = s.users_data.full_name;
+                    } else if (s.creator_id) {
+                        // قد يكون المنشئ محذوفًا
+                        creatorName = 'مسؤول النظام';
+                    }
+                    
                     let attRes = await supabaseClient.from('attendance_logs').select('*', {count: 'exact', head: true}).eq('course_id', cRes.data.id).eq('session_name', s.session_name);
                     let present = attRes.count || 0;
                     
@@ -400,7 +405,7 @@
                         qrStatus: qStatus,
                         qrCode: s.qr_code,
                         creationDate: cTime.toLocaleString('ar-EG', { timeZone: 'Africa/Cairo' }),
-                        creator: s.users_data ? s.users_data.full_name : 'غير معروف',
+                        creator: creatorName,
                         creatorId: s.creator_id,
                         isActive: s.is_active,
                         duration: s.duration_minutes,
@@ -513,11 +518,10 @@
             if (cRes.error) return { status: 'error' };
             const sRes = await supabaseClient.from('sessions').select('session_name').eq('course_id', cRes.data.id);
             const uniqueNames = [...new Set((sRes.data || []).map(s => s.session_name))];
-            // ترتيب أبجدي
             uniqueNames.sort((a, b) => a.localeCompare(b, 'ar', { numeric: true }));
             
             const eRes = await supabaseClient.from('course_enrollments').select('users_data(id, full_name, national_id)').eq('course_id', cRes.data.id);
-            const attRes = await supabaseClient.from('attendance_logs').select('student_id, session_name, scanned_at, users_data!scanned_by(full_name)').eq('course_id', cRes.data.id);
+            const attRes = await supabaseClient.from('attendance_logs').select('student_id, session_name, scanned_at, users_data!scanned_by(full_name), is_manual').eq('course_id', cRes.data.id);
             
             const headers = ["اسم الطالب", "حضور", "غياب", "الرقم القومي", ...uniqueNames];
             const rows = (eRes.data || []).map(e => {
@@ -548,12 +552,11 @@
 
             const sRes = await supabaseClient.from('sessions').select('session_name, created_at').eq('course_id', cRes.data.id).eq('creator_id', modId);
             let orderedNames = [...new Set((sRes.data||[]).map(s => s.session_name))];
-            // ترتيب أبجدي
             orderedNames.sort((a, b) => a.localeCompare(b, 'ar', { numeric: true }));
             
             const eRes = await supabaseClient.from('course_enrollments').select('users_data(id, full_name, national_id)').eq('course_id', cRes.data.id);
             
-            let q = supabaseClient.from('attendance_logs').select('student_id, session_name, scanned_at, users_data!scanned_by(full_name)').eq('course_id', cRes.data.id).in('session_name', orderedNames);
+            let q = supabaseClient.from('attendance_logs').select('student_id, session_name, scanned_at, users_data!scanned_by(full_name), is_manual').eq('course_id', cRes.data.id).in('session_name', orderedNames);
             if (modId) q = q.eq('scanned_by', modId);
             const attRes = await q;
 
@@ -582,14 +585,23 @@
             if (cRes.error) return { status: 'error' };
 
             const eRes = await supabaseClient.from('course_enrollments').select('users_data(id, full_name, national_id)').eq('course_id', cRes.data.id);
-            const attRes = await supabaseClient.from('attendance_logs').select('student_id, scanned_at, users_data!scanned_by(full_name)').eq('course_id', cRes.data.id).eq('session_name', session);
+            const attRes = await supabaseClient.from('attendance_logs').select('student_id, scanned_at, users_data!scanned_by(full_name), is_manual').eq('course_id', cRes.data.id).eq('session_name', session);
 
             const report = (eRes.data || []).map(e => {
                 const stu = e.users_data;
                 const rec = (attRes.data || []).find(x => x.student_id === stu.id);
                 if (rec) {
                     const mName = rec.users_data ? rec.users_data.full_name : '';
-                    return { name: stu.full_name, id: stu.national_id, status: 'حضور', time: `${new Date(rec.scanned_at).toLocaleString('ar-EG', {timeZone: 'Africa/Cairo'})} - (مع ${mName})`, color: 'green', rowIndex: stu.id, rawVal: 'present' };
+                    const manualText = rec.is_manual ? ' (تعديل يدوي)' : '';
+                    return { 
+                        name: stu.full_name, 
+                        id: stu.national_id, 
+                        status: 'حضور', 
+                        time: `${new Date(rec.scanned_at).toLocaleString('ar-EG', {timeZone: 'Africa/Cairo'})} - (مع ${mName}${manualText})`, 
+                        color: 'green', 
+                        rowIndex: stu.id, 
+                        rawVal: 'present' 
+                    };
                 }
                 return { name: stu.full_name, id: stu.national_id, status: 'غياب', time: '-', color: 'red', rowIndex: stu.id, rawVal: '' };
             }).sort((a,b) => a.name.localeCompare(b.name, 'ar'));
@@ -607,15 +619,20 @@
             orderedNames.sort((a, b) => a.localeCompare(b, 'ar', { numeric: true }));
 
             const stuIds = (eRes.data||[]).map(e => e.users_data.id);
-            const attRes = await supabaseClient.from('attendance_logs').select('student_id, session_name').eq('course_id', cRes.data.id).in('student_id', stuIds);
+            const attRes = await supabaseClient.from('attendance_logs').select('student_id, session_name, is_manual').eq('course_id', cRes.data.id).in('student_id', stuIds);
 
             const results = (eRes.data || []).map(e => {
                 const stu = e.users_data;
                 let p = 0, a = 0;
                 const sessInfo = orderedNames.map(sn => {
-                    const isPres = (attRes.data||[]).some(x => x.student_id === stu.id && x.session_name === sn);
-                    if (isPres) p++; else a++;
-                    return { name: sn, val: isPres ? 'حضور' : 'غياب' };
+                    const rec = (attRes.data||[]).find(x => x.student_id === stu.id && x.session_name === sn);
+                    if (rec) {
+                        p++;
+                        return { name: sn, val: 'حضور', manual: rec.is_manual };
+                    } else {
+                        a++;
+                        return { name: sn, val: 'غياب', manual: false };
+                    }
                 });
                 return { name: stu.full_name, id: stu.national_id, present: p, absent: a, sessions: sessInfo, rowIndex: stu.id };
             });
@@ -635,9 +652,9 @@
                     course_id: cRes.data.id, 
                     session_name: sessionName, 
                     student_id: stuId, 
-                    scanned_by: editorId 
+                    scanned_by: editorId,
+                    is_manual: true 
                 });
-                // تحديد النص حسب دور المحرر
                 const roleLabel = editorRole === 'admin' ? 'مسؤول النظام' : 'مدير';
                 return { 
                     status: 'success', 
@@ -655,7 +672,7 @@
         return { status: 'error', message: 'تعذر الاتصال بالخادم السحابي' };
       }
     };
-
+    
     // --- Hooks ---
     const useTheme = () => {
         const [theme, setTheme] = useState(() => localStorage.getItem('theme') || 'light');
