@@ -135,7 +135,7 @@
             let enrollRes = await supabaseClient.from('course_enrollments').select('id').eq('course_id', sessionData.course_id).eq('student_id', student.id).maybeSingle();
             if (enrollRes.error || !enrollRes.data) return { status: 'error', message: 'غير مسجل في هذا المقرر' };
 
-            // حساب الغيابات السابقة (من كل الجلسات السابقة لهذا المقرر)
+            // حساب الغيابات السابقة
             let prevSessRes = await supabaseClient.from('sessions').select('session_name, created_at').eq('course_id', sessionData.course_id).lt('created_at', sessionData.created_at);
             let prevSessions = prevSessRes.data || [];
             let uniquePrevNames = [...new Set(prevSessions.map(s => s.session_name))];
@@ -149,7 +149,7 @@
                 }
             }
 
-            // التحقق من عدم تسجيل الحضور مسبقاً في هذه الجلسة
+            // التحقق من عدم تسجيل الحضور مسبقاً
             let existRes = await supabaseClient.from('attendance_logs').select('scanned_by, users_data!scanned_by(full_name)').eq('course_id', sessionData.course_id).eq('session_name', sessionData.session_name).eq('student_id', student.id).maybeSingle();
             if (existRes.data) {
                 let creatorName = sessionData.users_data ? sessionData.users_data.full_name : 'غير معروف';
@@ -238,7 +238,6 @@
                 let allowedCourses = cRes.data || [];
                 
                 if (role === 'moderator' && adminUuid) {
-                    // للمدير: المقررات التي هو مدير لها (من course_managers)
                     const managerRes = await supabaseClient.from('course_managers').select('course_id').eq('manager_id', adminUuid);
                     const managedIds = (managerRes.data || []).map(m => m.course_id);
                     allowedCourses = allowedCourses.filter(c => managedIds.includes(c.id));
@@ -281,18 +280,15 @@
             }
 
             if (type === 'addCourse') {
-                // البحث عن المقرر أولاً
                 let courseRes = await supabaseClient.from('courses').select('id').eq('university', uni).eq('course_name', courseName).maybeSingle();
                 let courseId;
                 if (courseRes.error || !courseRes.data) {
-                    // غير موجود -> إنشاء جديد
                     const insRes = await supabaseClient.from('courses').insert({ university: uni, course_name: courseName }).select('id').single();
                     if (insRes.error) return { status: 'error', message: 'حدث خطأ أثناء إنشاء المقرر' };
                     courseId = insRes.data.id;
                 } else {
                     courseId = courseRes.data.id;
                 }
-                // إضافة المدير الحالي كمدير للمقرر (إذا لم يكن موجودًا)
                 if (adminUuid) {
                     await supabaseClient.from('course_managers').upsert({ course_id: courseId, manager_id: adminUuid }, { onConflict: 'course_id, manager_id' });
                 }
@@ -301,21 +297,14 @@
 
             if (type === 'deleteCourse') {
                 if (role === 'admin') {
-                    // المسؤول: حذف المقرر نهائياً
                     await supabaseClient.from('courses').delete().eq('university', uni).eq('course_name', courseName);
                 } else if (adminUuid) {
-                    // المدير: البحث عن المقرر
                     const cRes = await supabaseClient.from('courses').select('id').eq('university', uni).eq('course_name', courseName).single();
                     if (cRes.data) {
-                        // حذف جلسات هذا المدير فقط من المقرر
                         await supabaseClient.from('sessions').delete().eq('course_id', cRes.data.id).eq('creator_id', adminUuid);
-                        // حذف حضور الطلاب المرتبط بتلك الجلسات (بسبب CASCADE)
-                        // إزالة المدير من course_managers
                         await supabaseClient.from('course_managers').delete().eq('course_id', cRes.data.id).eq('manager_id', adminUuid);
-                        // التحقق مما إذا كان لا يزال هناك مديرون للمقرر
                         const remainingManagers = await supabaseClient.from('course_managers').select('manager_id').eq('course_id', cRes.data.id);
                         if (remainingManagers.data && remainingManagers.data.length === 0) {
-                            // إذا لم يبقَ أي مدير، يمكن حذف المقرر بالكامل
                             await supabaseClient.from('courses').delete().eq('id', cRes.data.id);
                         }
                     }
@@ -360,13 +349,20 @@
 
                 if (type === 'changeQR') {
                     const qrData = `${uni}|separator|${course}|separator|${targetSessionName}|separator|${pinCode}`;
-                    let updQ = supabaseClient.from('sessions').update({
+                    let query = supabaseClient.from('sessions').update({
                         duration_minutes: payload.duration, qr_code: qrData, pin_code: pinCode, is_active: true, created_at: new Date().toISOString()
-                    }).eq('course_id', cId).eq('session_name', targetSessionName);
+                    });
                     
-                    if (role === 'moderator' && adminUuid) updQ = updQ.eq('creator_id', adminUuid);
+                    // إذا تم توفير qrCode الأصلي، نستخدمه لتحديد الجلسة بدقة
+                    if (payload.originalQrCode) {
+                        query = query.eq('qr_code', payload.originalQrCode);
+                    } else {
+                        // للتوافق مع الإصدارات السابقة
+                        query = query.eq('course_id', cId).eq('session_name', targetSessionName);
+                        if (role === 'moderator' && adminUuid) query = query.eq('creator_id', adminUuid);
+                    }
                     
-                    await updQ;
+                    await query;
                     return { status: 'success', qrData, sessionName: targetSessionName, pinCode };
                 }
             }
@@ -384,11 +380,9 @@
 
                 let stats = [];
                 for(let s of (sRes.data || [])) {
-                    // حساب الحضور لهذه الجلسة (مع أي مدير)
                     let attRes = await supabaseClient.from('attendance_logs').select('*', {count: 'exact', head: true}).eq('course_id', cRes.data.id).eq('session_name', s.session_name);
                     let present = attRes.count || 0;
                     
-                    // تحديد الحالة الفعلية
                     let cTime = new Date(s.created_at);
                     let now = new Date();
                     let minutesPassed = (now - cTime) / 1000 / 60;
@@ -425,15 +419,12 @@
                     if (role === 'admin') {
                         await supabaseClient.from('sessions').delete().eq('course_id', cRes.data.id).eq('session_name', payload.sessionName);
                     } else if (adminUuid) {
-                        // حذف حضور الطلاب لهذا المدير فقط
                         await supabaseClient.from('attendance_logs').delete().eq('course_id', cRes.data.id).eq('session_name', payload.sessionName).eq('scanned_by', adminUuid);
-                        // حذف الجلسة الخاصة بهذا المدير
                         await supabaseClient.from('sessions').delete().eq('course_id', cRes.data.id).eq('session_name', payload.sessionName).eq('creator_id', adminUuid);
                         
-                        // بعد الحذف، تحقق مما إذا كان لا يزال هناك أي مدير آخر لديه جلسة بنفس الاسم
                         const remainingSessions = await supabaseClient.from('sessions').select('id').eq('course_id', cRes.data.id).eq('session_name', payload.sessionName);
                         if (remainingSessions.data && remainingSessions.data.length === 0) {
-                            // لا يوجد جلسات بهذا الاسم، لا نحتاج لحذف أي شيء آخر
+                            // لا يوجد جلسات بهذا الاسم
                         }
                     }
                 }
@@ -477,11 +468,10 @@
                 const cRes = await supabaseClient.from('courses').select('id').eq('university', uni).eq('course_name', course).single();
                 if (cRes.error) return { status: 'error', message: 'المقرر غير موجود' };
                 const cId = cRes.data.id;
-                const students = payload.students; // مصفوفة تحتوي على { name, id, pass }
+                const students = payload.students;
                 let added = 0;
                 for (let stu of students) {
                     if (!stu.name || !stu.id) continue;
-                    // البحث أو إنشاء المستخدم
                     let uRes = await supabaseClient.from('users_data').select('id').eq('national_id', stu.id).maybeSingle();
                     let uId;
                     if (!uRes.data) {
@@ -491,7 +481,6 @@
                     } else {
                         uId = uRes.data.id;
                     }
-                    // تسجيل في المقرر
                     await supabaseClient.from('course_enrollments').upsert({ course_id: cId, student_id: uId });
                     added++;
                 }
@@ -524,8 +513,10 @@
         if (action === 'getCourseReport') {
             const cRes = await supabaseClient.from('courses').select('id').eq('university', payload.uni).eq('course_name', payload.course).single();
             if (cRes.error) return { status: 'error' };
-            const sRes = await supabaseClient.from('sessions').select('session_name').eq('course_id', cRes.data.id).order('created_at', {ascending: true});
-            const uniqueNames = [...new Set((sRes.data || []).map(s=>s.session_name))];
+            const sRes = await supabaseClient.from('sessions').select('session_name').eq('course_id', cRes.data.id);
+            const uniqueNames = [...new Set((sRes.data || []).map(s => s.session_name))];
+            // ترتيب أسماء الجلسات أبجدياً
+            uniqueNames.sort((a, b) => a.localeCompare(b, 'ar', { numeric: true }));
             
             const eRes = await supabaseClient.from('course_enrollments').select('users_data(id, full_name, national_id)').eq('course_id', cRes.data.id);
             const attRes = await supabaseClient.from('attendance_logs').select('student_id, session_name, scanned_at, users_data!scanned_by(full_name)').eq('course_id', cRes.data.id);
@@ -557,13 +548,14 @@
             const cRes = await supabaseClient.from('courses').select('id').eq('university', uni).eq('course_name', course).single();
             if (cRes.error) return { status: 'error' };
 
-            // جلب جميع جلسات هذا المدير لهذا المقرر
-            const sRes = await supabaseClient.from('sessions').select('session_name, created_at').eq('course_id', cRes.data.id).eq('creator_id', modId).order('created_at', {ascending: true});
-            const orderedNames = [...new Set((sRes.data||[]).map(s=>s.session_name))]; // أسماء الجلسات التي أنشأها هذا المدير
+            // جلب جلسات هذا المدير فقط
+            const sRes = await supabaseClient.from('sessions').select('session_name, created_at').eq('course_id', cRes.data.id).eq('creator_id', modId);
+            let orderedNames = [...new Set((sRes.data||[]).map(s => s.session_name))];
+            // ترتيب أبجدي
+            orderedNames.sort((a, b) => a.localeCompare(b, 'ar', { numeric: true }));
             
             const eRes = await supabaseClient.from('course_enrollments').select('users_data(id, full_name, national_id)').eq('course_id', cRes.data.id);
             
-            // جلب حضور الطلاب لهذه الجلسات مع هذا المدير فقط
             let q = supabaseClient.from('attendance_logs').select('student_id, session_name, scanned_at, users_data!scanned_by(full_name)').eq('course_id', cRes.data.id).in('session_name', orderedNames);
             if (modId) q = q.eq('scanned_by', modId);
             const attRes = await q;
@@ -613,8 +605,9 @@
             if (cRes.error) return { status: 'error' };
 
             const eRes = await supabaseClient.from('course_enrollments').select('users_data!inner(id, full_name, national_id)').eq('course_id', cRes.data.id).or(`full_name.ilike.%${payload.query}%,national_id.ilike.%${payload.query}%`, { foreignTable: 'users_data' });
-            const sRes = await supabaseClient.from('sessions').select('session_name').eq('course_id', cRes.data.id).order('created_at', {ascending: true});
-            const orderedNames = [...new Set((sRes.data||[]).map(s=>s.session_name))];
+            const sRes = await supabaseClient.from('sessions').select('session_name').eq('course_id', cRes.data.id);
+            let orderedNames = [...new Set((sRes.data||[]).map(s => s.session_name))];
+            orderedNames.sort((a, b) => a.localeCompare(b, 'ar', { numeric: true }));
 
             const stuIds = (eRes.data||[]).map(e => e.users_data.id);
             const attRes = await supabaseClient.from('attendance_logs').select('student_id, session_name').eq('course_id', cRes.data.id).in('student_id', stuIds);
@@ -633,7 +626,7 @@
         }
 
         if (action === 'updateAttendanceCell') {
-            const { uni, course, rowIndex: stuId, status, sessionName, editorName } = payload;
+            const { uni, course, rowIndex: stuId, status, sessionName, editorName, editorRole } = payload;
             const cRes = await supabaseClient.from('courses').select('id').eq('university', uni).eq('course_name', course).single();
             if (cRes.error) return { status: 'error' };
 
@@ -642,7 +635,9 @@
 
             if (status === 'present') {
                 await supabaseClient.from('attendance_logs').insert({ course_id: cRes.data.id, session_name: sessionName, student_id: stuId, scanned_by: editorId });
-                return { status: 'success', newValue: `${new Date().toLocaleString('ar-EG', {timeZone: 'Africa/Cairo'})} - (مع ${editorName} - تعديل يدوي)` };
+                // تحديد نوع المحرر لعرضه في الرسالة
+                const roleLabel = editorRole === 'admin' ? 'مسؤول النظام' : 'مدير';
+                return { status: 'success', newValue: `${new Date().toLocaleString('ar-EG', {timeZone: 'Africa/Cairo'})} - (مع ${roleLabel} - تعديل يدوي)` };
             } else {
                 await supabaseClient.from('attendance_logs').delete().eq('course_id', cRes.data.id).eq('session_name', sessionName).eq('student_id', stuId);
                 return { status: 'success', newValue: '' };
