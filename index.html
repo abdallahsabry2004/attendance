@@ -69,11 +69,14 @@
     const SUPABASE_ANON_KEY = "eyJhbGciOiJIUzI1NiIsInR5cCI6IkpXVCJ9.eyJpc3MiOiJzdXBhYmFzZSIsInJlZiI6InBldXpvaGNobmtwY2Vzb2F0amR6Iiwicm9sZSI6ImFub24iLCJpYXQiOjE3NzIxMDM2MDYsImV4cCI6MjA4NzY3OTYwNn0.TFkjH9bRs5Rxa6gYvBlFpRXmAU28rri-RzeXH59gxQI";
     const supabase = window.supabase.createClient(SUPABASE_URL, SUPABASE_ANON_KEY);
 
-    // --- دالة الاتصال الجديدة (runServer) ---
+// --- دالة الاتصال الجديدة (runServer) الموحدة ---
     const runServer = async (action, payload = {}) => {
       try {
         switch (action) {
           
+          // ==========================================
+          // 1. نظام تسجيل الدخول وتغيير كلمة المرور
+          // ==========================================
           case 'login': {
             const { data, error } = await supabase
               .from('users_data')
@@ -81,29 +84,22 @@
               .eq('national_id', payload.nationalId)
               .maybeSingle(); 
               
-            // 1. إذا كان الرقم القومي غير موجود نهائياً
             if (error || !data) return { status: 'error', message: 'الرقم القومي غير مسجل' };
             
-            // 2. الخطوة الأولى في الواجهة (فحص الرقم القومي فقط بدون إرسال كلمة المرور)
             if (!payload.password) {
-                // إذا لم يكن لديه كلمة مرور مسجلة في قاعدة البيانات
                 if (!data.password || data.password.trim() === '') {
                     return { status: 'create_password', role: data.role, name: data.full_name };
                 }
-                // إذا كان لديه كلمة مرور، نطلب منه إدخالها
                 return { status: 'require_password', role: data.role, name: data.full_name };
             }
 
-            // 3. الخطوة الثانية (التحقق من كلمة المرور المدخلة)
             if (data.password !== payload.password) {
                 return { status: 'error', message: 'كلمة المرور غير صحيحة' };
             }
             
-            // نجاح تسجيل الدخول
             return { status: 'success', role: data.role, name: data.full_name };
           }
 
-          // إضافة دالة تسجيل وتغيير كلمة المرور
           case 'registerPassword':
           case 'changePassword': {
             const { error } = await supabase
@@ -113,15 +109,16 @@
               
             if (error) return { status: 'error', message: 'حدث خطأ أثناء حفظ كلمة المرور' };
             
-            // عند إنشاء كلمة المرور بنجاح، نرسل بيانات المستخدم ليدخل مباشرة
             if(action === 'registerPassword') {
                const { data } = await supabase.from('users_data').select('role, full_name').eq('national_id', payload.nationalId).single();
                return { status: 'success', message: 'تم الحفظ', role: data.role, name: data.full_name };
             }
-            
             return { status: 'success', message: 'تم تحديث كلمة المرور بنجاح' };
           }
-            
+
+          // ==========================================
+          // 2. تسجيل الحضور (مسح الـ QR)
+          // ==========================================
           case 'scanAttendance': {
             const { data, error } = await supabase.rpc('scan_attendance_secure', {
               p_national_id: payload.nationalId,
@@ -130,6 +127,10 @@
             if (error) { console.error(error); return { status: 'error', message: 'حدث خطأ في قراءة الرمز' }; }
             return data; 
           }
+
+          // ==========================================
+          // 3. شاشات الطالب (بيانات، سجل، إنذارات)
+          // ==========================================
           case 'getStudentData': {
             const { data, error } = await supabase
               .from('users_data')
@@ -140,6 +141,79 @@
             const courses = data.course_enrollments.map(e => e.courses.course_name);
             return { status: 'success', courses: courses };
           }
+
+          case 'getStudentHistory': {
+            const { data: student } = await supabase.from('users_data').select('id').eq('national_id', payload.nationalId).single();
+            const { data: course } = await supabase.from('courses').select('id').eq('university', payload.uni).eq('course_name', payload.course).single();
+            
+            if (!student || !course) return { status: 'error', message: 'بيانات غير موجودة' };
+
+            const { data: sessions } = await supabase.from('sessions').select('id, session_name, created_at').eq('course_id', course.id).order('created_at', { ascending: true });
+            const { data: attendance } = await supabase.from('attendance_logs').select('session_id, scanned_at, status').eq('student_id', student.id);
+            
+            let presentCount = 0; let absentCount = 0; let formattedSessions = [];
+
+            (sessions || []).forEach(s => {
+                const record = (attendance || []).find(a => a.session_id === s.id);
+                const isPresent = !!record;
+                if (isPresent) presentCount++; else absentCount++;
+                const dateObj = new Date(isPresent ? record.scanned_at : s.created_at);
+                formattedSessions.push({
+                    name: s.session_name,
+                    status: isPresent ? 'حضور' : 'غياب',
+                    time: dateObj.toLocaleString('ar-EG', { timeZone: 'Africa/Cairo' }),
+                    color: isPresent ? 'green' : 'red'
+                });
+            });
+            return { status: 'success', data: { sessions: formattedSessions, presentCount, absentCount } };
+          }
+
+          case 'getStudentWarnings': {
+            const { data: student } = await supabase.from('users_data').select('id').eq('national_id', payload.nationalId).single();
+            if(!student) return { status: 'success', warnings: [] };
+
+            const { data: enrollments } = await supabase.from('course_enrollments').select('course_id, courses(course_name)').eq('student_id', student.id);
+            if(!enrollments || enrollments.length === 0) return { status: 'success', warnings: [] };
+
+            const courseIds = enrollments.map(e => e.course_id);
+            const { data: allSessions } = await supabase.from('sessions').select('id, course_id').in('course_id', courseIds);
+            const { data: allAttendance } = await supabase.from('attendance_logs').select('session_id').eq('student_id', student.id);
+            
+            const attendedSessionIds = new Set((allAttendance || []).map(a => a.session_id));
+            let warnings = [];
+
+            enrollments.forEach(enroll => {
+                const courseSessions = (allSessions || []).filter(s => s.course_id === enroll.course_id);
+                let absentCount = 0;
+                courseSessions.forEach(cs => { if (!attendedSessionIds.has(cs.id)) absentCount++; });
+                if (absentCount >= 3) warnings.push({ course: enroll.courses.course_name, absentCount, type: absentCount >= 4 ? 'deprived' : 'warning' });
+            });
+            return { status: 'success', warnings };
+          }
+
+          // ==========================================
+          // 4. أوامر المدير (Admin Actions)
+          // ==========================================
+          case 'adminAction': {
+              const { type, role, name } = payload;
+              
+              if (type === 'getAdminData') {
+                  const { data: courses } = await supabase.from('courses').select('*');
+                  const tree = {};
+                  (courses || []).forEach(c => {
+                      if (!tree[c.university]) tree[c.university] = [];
+                      tree[c.university].push(c.course_name);
+                  });
+                  const { data: mods } = await supabase.from('users_data').select('national_id, full_name').eq('role', 'moderator');
+                  const moderators = (mods || []).map(m => ({ name: m.full_name, id: m.national_id }));
+                  const materials = [...new Set((courses || []).map(c => c.course_name))];
+
+                  return { status: 'success', data: tree, materials, moderators };
+              }
+              
+              return { status: 'error', message: 'جاري تحديث باقي أوامر لوحة التحكم لتتناسب مع النظام الجديد...' };
+          }
+
           default:
             return { status: 'error', message: 'الإجراء غير مدعوم حالياً في النسخة الجديدة' };
         }
