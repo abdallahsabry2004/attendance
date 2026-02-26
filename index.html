@@ -58,6 +58,7 @@
   <div id="root"></div>
 
   <script type="text/babel">
+    const { useState, useEffect, useRef, useCallback } = React;
    // ضع رابط مشروعك ومفتاح Anon Key هنا (تجدها في Supabase -> Project Settings -> API)
 const SUPABASE_URL = "https://peuzohchnkpcesoatjdz.supabase.co";
 const SUPABASE_ANON_KEY = "eyJhbGciOiJIUzI1NiIsInR5cCI6IkpXVCJ9.eyJpc3MiOiJzdXBhYmFzZSIsInJlZiI6InBldXpvaGNobmtwY2Vzb2F0amR6Iiwicm9sZSI6ImFub24iLCJpYXQiOjE3NzIxMDM2MDYsImV4cCI6MjA4NzY3OTYwNn0.TFkjH9bRs5Rxa6gYvBlFpRXmAU28rri-RzeXH59gxQI";
