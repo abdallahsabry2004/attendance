@@ -4,6 +4,8 @@
   <meta charset="UTF-8">
   <meta name="viewport" content="width=device-width, initial-scale=1.0, maximum-scale=1.0, user-scalable=no">
   <title>نظام الحضور</title>
+  <link rel="icon" type="image/svg+xml" href="favicon.svg">
+  <link rel="apple-touch-icon" href="favicon.svg">
   
   <script src="https://cdn.tailwindcss.com"></script>
   <script>
@@ -377,7 +379,6 @@
                 if (cRes.error) return { status: 'error' };
                 
                 let q = supabaseClient.from('sessions').select('id, session_name, is_active, qr_code, created_at, duration_minutes, creator_id, users_data!creator_id(full_name)').eq('course_id', cRes.data.id);
-                // إذا كان المستخدم مديراً، نعرض جلساته فقط. إذا كان مسؤولاً، نعرض الكل.
                 if (role === 'moderator' && adminUuid) q = q.eq('creator_id', adminUuid);
                 const sRes = await q;
                 
@@ -387,7 +388,6 @@
                 let stats = [];
                 for(let s of (sRes.data || [])) {
                     // حساب الحضور: إذا كان المستخدم مديراً، نحسب فقط الحضور الذي سجله هو.
-                    // إذا كان مسؤولاً، نحسب كل الحضور.
                     let presentQuery = supabaseClient.from('attendance_logs').select('*', {count: 'exact', head: true})
                         .eq('course_id', cRes.data.id)
                         .eq('session_name', s.session_name);
@@ -397,7 +397,7 @@
                     let presentRes = await presentQuery;
                     let present = presentRes.count || 0;
                     
-                    // تحديد اسم المنشئ: إذا لم يوجد، نعرض "مسؤول النظام"
+                    // تحديد اسم المنشئ
                     let creatorName = 'مسؤول النظام';
                     if (s.users_data && s.users_data.full_name) {
                         creatorName = s.users_data.full_name;
@@ -435,15 +435,19 @@
 
             if (type === 'deleteSession') {
                 const cRes = await supabaseClient.from('courses').select('id').eq('university', uni).eq('course_name', course).single();
-                if (cRes.data) {
-                    if (role === 'admin') {
-                        // المسؤول: حذف الجلسة نهائياً (كل الجلسات بهذا الاسم)
-                        await supabaseClient.from('sessions').delete().eq('course_id', cRes.data.id).eq('session_name', payload.sessionName);
-                    } else if (adminUuid) {
-                        // المدير: حذف حضور طلابه فقط ثم حذف الجلسة الخاصة به
-                        await supabaseClient.from('attendance_logs').delete().eq('course_id', cRes.data.id).eq('session_name', payload.sessionName).eq('scanned_by', adminUuid);
-                        await supabaseClient.from('sessions').delete().eq('course_id', cRes.data.id).eq('session_name', payload.sessionName).eq('creator_id', adminUuid);
-                    }
+                if (cRes.error) return { status: 'error' };
+                const courseId = cRes.data.id;
+                
+                if (role === 'admin') {
+                    // المسؤول: حذف كل سجلات الحضور لهذه الجلسة أولاً
+                    await supabaseClient.from('attendance_logs').delete().eq('course_id', courseId).eq('session_name', payload.sessionName);
+                    // ثم حذف كل الجلسات بهذا الاسم
+                    await supabaseClient.from('sessions').delete().eq('course_id', courseId).eq('session_name', payload.sessionName);
+                } else if (adminUuid) {
+                    // المدير: حذف سجلات الحضور التي سجلها هو فقط
+                    await supabaseClient.from('attendance_logs').delete().eq('course_id', courseId).eq('session_name', payload.sessionName).eq('scanned_by', adminUuid);
+                    // ثم حذف الجلسة الخاصة به (التي أنشأها)
+                    await supabaseClient.from('sessions').delete().eq('course_id', courseId).eq('session_name', payload.sessionName).eq('creator_id', adminUuid);
                 }
                 return { status: 'success' };
             }
@@ -686,7 +690,7 @@
         return { status: 'error', message: 'تعذر الاتصال بالخادم السحابي' };
       }
     };
-    
+
     // --- Hooks ---
     const useTheme = () => {
         const [theme, setTheme] = useState(() => localStorage.getItem('theme') || 'light');
