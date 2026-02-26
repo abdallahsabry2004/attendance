@@ -68,7 +68,7 @@
     const SUPABASE_ANON_KEY = "eyJhbGciOiJIUzI1NiIsInR5cCI6IkpXVCJ9.eyJpc3MiOiJzdXBhYmFzZSIsInJlZiI6InBldXpvaGNobmtwY2Vzb2F0amR6Iiwicm9sZSI6ImFub24iLCJpYXQiOjE3NzIxMDM2MDYsImV4cCI6MjA4NzY3OTYwNn0.TFkjH9bRs5Rxa6gYvBlFpRXmAU28rri-RzeXH59gxQI";
     const supabaseClient = window.supabase.createClient(SUPABASE_URL, SUPABASE_ANON_KEY);
 
-    // --- محرك الاتصال الجديد (مصمم ليتطابق مع Code.gs تماماً ويمنع أخطاء النصوص) ---
+    // --- محرك الاتصال الجديد ---
     const runServer = async (action, payload = {}) => {
       try {
         if (action === 'login') {
@@ -141,17 +141,15 @@
             let uniquePrevNames = [...new Set(prevSessions.map(s => s.session_name))];
             
             if (uniquePrevNames.length > 0) {
-                // جلب كل جلسات الحضور للطالب لهذه الأسماء
                 let attRes = await supabaseClient.from('attendance_logs').select('session_name').eq('student_id', student.id).eq('course_id', sessionData.course_id).in('session_name', uniquePrevNames);
                 let attendedNames = new Set((attRes.data || []).map(a => a.session_name));
                 let absences = uniquePrevNames.length - attendedNames.size;
-                // إذا كان الغياب 4 أو أكثر، يمنع من الحضور (حتى لو كان الغياب 4 بالضبط، يمنع)
                 if (absences >= 4) {
                     return { status: 'error', message: 'عذراً، لقد تم حرمانك من المقرر لتجاوز نسبة الغياب.' };
                 }
             }
 
-            // التحقق من عدم تسجيل الحضور مسبقاً في هذه الجلسة (مع أي مدير)
+            // التحقق من عدم تسجيل الحضور مسبقاً في هذه الجلسة
             let existRes = await supabaseClient.from('attendance_logs').select('scanned_by, users_data!scanned_by(full_name)').eq('course_id', sessionData.course_id).eq('session_name', sessionData.session_name).eq('student_id', student.id).maybeSingle();
             if (existRes.data) {
                 let creatorName = sessionData.users_data ? sessionData.users_data.full_name : 'غير معروف';
@@ -237,17 +235,17 @@
 
             if (type === 'getAdminData') {
                 const cRes = await supabaseClient.from('courses').select('*');
-                let allowed = cRes.data || [];
+                let allowedCourses = cRes.data || [];
                 
                 if (role === 'moderator' && adminUuid) {
-                    // للمدير: المقررات التي أنشأ لها جلسات فقط
-                    const mySess = await supabaseClient.from('sessions').select('course_id').eq('creator_id', adminUuid);
-                    const myIds = [...new Set((mySess.data || []).map(s => s.course_id))];
-                    allowed = allowed.filter(c => myIds.includes(c.id));
+                    // للمدير: المقررات التي هو مدير لها (من course_managers)
+                    const managerRes = await supabaseClient.from('course_managers').select('course_id').eq('manager_id', adminUuid);
+                    const managedIds = (managerRes.data || []).map(m => m.course_id);
+                    allowedCourses = allowedCourses.filter(c => managedIds.includes(c.id));
                 }
 
                 const tree = {};
-                allowed.forEach(c => {
+                allowedCourses.forEach(c => {
                     if (!tree[c.university]) tree[c.university] = [];
                     tree[c.university].push(c.course_name);
                 });
@@ -283,8 +281,21 @@
             }
 
             if (type === 'addCourse') {
-                const insRes = await supabaseClient.from('courses').insert({ university: uni, course_name: courseName, created_by: adminUuid });
-                if (insRes.error) return { status: 'error', message: 'المقرر موجود بالفعل' };
+                // البحث عن المقرر أولاً
+                let courseRes = await supabaseClient.from('courses').select('id').eq('university', uni).eq('course_name', courseName).maybeSingle();
+                let courseId;
+                if (courseRes.error || !courseRes.data) {
+                    // غير موجود -> إنشاء جديد
+                    const insRes = await supabaseClient.from('courses').insert({ university: uni, course_name: courseName }).select('id').single();
+                    if (insRes.error) return { status: 'error', message: 'حدث خطأ أثناء إنشاء المقرر' };
+                    courseId = insRes.data.id;
+                } else {
+                    courseId = courseRes.data.id;
+                }
+                // إضافة المدير الحالي كمدير للمقرر (إذا لم يكن موجودًا)
+                if (adminUuid) {
+                    await supabaseClient.from('course_managers').upsert({ course_id: courseId, manager_id: adminUuid }, { onConflict: 'course_id, manager_id' });
+                }
                 return { status: 'success' };
             }
 
@@ -293,17 +304,18 @@
                     // المسؤول: حذف المقرر نهائياً
                     await supabaseClient.from('courses').delete().eq('university', uni).eq('course_name', courseName);
                 } else if (adminUuid) {
-                    // المدير: حذف جلساته فقط من المقرر
+                    // المدير: البحث عن المقرر
                     const cRes = await supabaseClient.from('courses').select('id').eq('university', uni).eq('course_name', courseName).single();
                     if (cRes.data) {
-                        // حذف جلسات المدير
+                        // حذف جلسات هذا المدير فقط من المقرر
                         await supabaseClient.from('sessions').delete().eq('course_id', cRes.data.id).eq('creator_id', adminUuid);
-                        // حذف حضور الطلاب المرتبط بتلك الجلسات (بسبب ON DELETE CASCADE من sessions إلى attendance_logs)
-                        // لا نحتاج إلى حذف attendance_logs يدوياً لأن CASCADE سيفعلها.
-                        // بعد الحذف، تحقق مما إذا كان لا يزال هناك أي جلسات للمقرر
-                        const countRes = await supabaseClient.from('sessions').select('id', { count: 'exact', head: true }).eq('course_id', cRes.data.id);
-                        if (countRes.count === 0) {
-                            // إذا لم يتبق أي جلسات، يمكن حذف المقرر
+                        // حذف حضور الطلاب المرتبط بتلك الجلسات (بسبب CASCADE)
+                        // إزالة المدير من course_managers
+                        await supabaseClient.from('course_managers').delete().eq('course_id', cRes.data.id).eq('manager_id', adminUuid);
+                        // التحقق مما إذا كان لا يزال هناك مديرون للمقرر
+                        const remainingManagers = await supabaseClient.from('course_managers').select('manager_id').eq('course_id', cRes.data.id);
+                        if (remainingManagers.data && remainingManagers.data.length === 0) {
+                            // إذا لم يبقَ أي مدير، يمكن حذف المقرر بالكامل
                             await supabaseClient.from('courses').delete().eq('id', cRes.data.id);
                         }
                     }
@@ -376,7 +388,7 @@
                     let attRes = await supabaseClient.from('attendance_logs').select('*', {count: 'exact', head: true}).eq('course_id', cRes.data.id).eq('session_name', s.session_name);
                     let present = attRes.count || 0;
                     
-                    // تحديد الحالة الفعلية بناءً على الوقت الحالي والمدة
+                    // تحديد الحالة الفعلية
                     let cTime = new Date(s.created_at);
                     let now = new Date();
                     let minutesPassed = (now - cTime) / 1000 / 60;
@@ -398,7 +410,6 @@
                         createdAt: s.created_at
                     });
                 }
-                // ترتيب حسب اسم الجلسة (أبجدياً)
                 stats.sort((a,b) => a.session.localeCompare(b.session, 'ar', {numeric: true}));
                 return { status: 'success', sessions: stats };
             }
@@ -412,20 +423,17 @@
                 const cRes = await supabaseClient.from('courses').select('id').eq('university', uni).eq('course_name', course).single();
                 if (cRes.data) {
                     if (role === 'admin') {
-                        // المسؤول: حذف الجلسة بالكامل (كل الجلسات التي بهذا الاسم)
                         await supabaseClient.from('sessions').delete().eq('course_id', cRes.data.id).eq('session_name', payload.sessionName);
-                        // attendance_logs ستحذف تلقائياً بسبب CASCADE
                     } else if (adminUuid) {
-                        // المدير: حذف جلساته فقط (حذف السجل من sessions للمدير فقط)
-                        // أولاً: حذف attendance_logs لهذا المدير فقط لهذه الجلسة
+                        // حذف حضور الطلاب لهذا المدير فقط
                         await supabaseClient.from('attendance_logs').delete().eq('course_id', cRes.data.id).eq('session_name', payload.sessionName).eq('scanned_by', adminUuid);
-                        // ثانياً: حذف session الخاصة بهذا المدير (إذا كان هو منشئها)
+                        // حذف الجلسة الخاصة بهذا المدير
                         await supabaseClient.from('sessions').delete().eq('course_id', cRes.data.id).eq('session_name', payload.sessionName).eq('creator_id', adminUuid);
                         
                         // بعد الحذف، تحقق مما إذا كان لا يزال هناك أي مدير آخر لديه جلسة بنفس الاسم
                         const remainingSessions = await supabaseClient.from('sessions').select('id').eq('course_id', cRes.data.id).eq('session_name', payload.sessionName);
                         if (remainingSessions.data && remainingSessions.data.length === 0) {
-                            // إذا لم يبقَ أي جلسة بهذا الاسم، لا نحتاج لحذف أي شيء آخر
+                            // لا يوجد جلسات بهذا الاسم، لا نحتاج لحذف أي شيء آخر
                         }
                     }
                 }
@@ -530,7 +538,7 @@
                     const rec = (attRes.data || []).find(x => x.student_id === stu.id && x.session_name === sn);
                     if (rec) {
                         p++;
-                        return "✓"; // علامة صح بدلاً من النص الطويل
+                        return "✓";
                     }
                     a++;
                     return "✗";
@@ -549,17 +557,17 @@
             const cRes = await supabaseClient.from('courses').select('id').eq('university', uni).eq('course_name', course).single();
             if (cRes.error) return { status: 'error' };
 
-            const sRes = await supabaseClient.from('sessions').select('session_name, created_at').eq('course_id', cRes.data.id).order('created_at', {ascending: true});
+            // جلب جميع جلسات هذا المدير لهذا المقرر
+            const sRes = await supabaseClient.from('sessions').select('session_name, created_at').eq('course_id', cRes.data.id).eq('creator_id', modId).order('created_at', {ascending: true});
+            const orderedNames = [...new Set((sRes.data||[]).map(s=>s.session_name))]; // أسماء الجلسات التي أنشأها هذا المدير
+            
             const eRes = await supabaseClient.from('course_enrollments').select('users_data(id, full_name, national_id)').eq('course_id', cRes.data.id);
             
-            let q = supabaseClient.from('attendance_logs').select('student_id, session_name, scanned_at, users_data!scanned_by(full_name)').eq('course_id', cRes.data.id);
+            // جلب حضور الطلاب لهذه الجلسات مع هذا المدير فقط
+            let q = supabaseClient.from('attendance_logs').select('student_id, session_name, scanned_at, users_data!scanned_by(full_name)').eq('course_id', cRes.data.id).in('session_name', orderedNames);
             if (modId) q = q.eq('scanned_by', modId);
             const attRes = await q;
 
-            // جلسات هذا المدير فقط
-            const modSessionNames = [...new Set((attRes.data || []).map(a => a.session_name))];
-            const orderedNames = [...new Set((sRes.data||[]).map(s=>s.session_name))].filter(n => modSessionNames.includes(n));
-            
             const headers = ["اسم الطالب", "حضور", "غياب", "الرقم القومي", ...orderedNames];
             const rows = (eRes.data || []).map(e => {
                 let p = 0, a = 0;
@@ -568,7 +576,7 @@
                     const rec = (attRes.data || []).find(x => x.student_id === stu.id && x.session_name === sn);
                     if (rec) {
                         p++;
-                        return "✓"; // علامة صح
+                        return "✓";
                     }
                     a++;
                     return "✗";
@@ -874,7 +882,7 @@
             setToast({ type: 'info', message: 'جاري التسجيل...' });
             runServer('scanAttendance', { nationalId: user.id, qrData: decodedText }).then(res => {
                 setToast({ type: res.status, message: res.message });
-                fetchWarnings(); // Refresh warnings after scan
+                fetchWarnings();
             });
         };
         
@@ -1027,24 +1035,6 @@
 
                     {view === 'warnings' && (
                         <div className="fade-in space-y-4">
-                            {/* النصوص التوضيحية حسب حالة الإنذار */}
-                            {!loadingWarnings && warningsList.length > 0 && warningsList.map((w, i) => {
-                                if (w.type === 'warning') {
-                                    return (
-                                        <div key={i} className="bg-yellow-50 dark:bg-yellow-900/20 border-r-4 border-yellow-500 p-4 rounded-lg text-sm">
-                                            <p className="font-bold text-yellow-800 dark:text-yellow-200">⚠️ يرجى الانتباه! غياب جلسة أخرى سيؤدي إلى حرمانك نهائياً من هذا المقرر.</p>
-                                        </div>
-                                    );
-                                } else if (w.type === 'deprived') {
-                                    return (
-                                        <div key={i} className="bg-red-50 dark:bg-red-900/20 border-r-4 border-red-600 p-4 rounded-lg text-sm">
-                                            <p className="font-bold text-red-800 dark:text-red-200">⛔ لقد تم حرمانك من هذا المقرر لتجاوز نسبة الغياب المسموح بها، ولن يقبل النظام تسجيلك في الجلسات القادمة.</p>
-                                        </div>
-                                    );
-                                }
-                                return null;
-                            })}
-
                             {loadingWarnings && <div className="text-center p-4"><span className="loader-sm border-t-blue-600"></span></div>}
                             {!loadingWarnings && warningsList.length === 0 && (
                                 <div className="bg-white dark:bg-gray-800 p-8 rounded-2xl shadow-sm border border-gray-100 dark:border-gray-700 text-center">
@@ -1068,7 +1058,18 @@
                                         </h3>
                                     </div>
                                     <p className="font-bold text-gray-800 dark:text-gray-200 mb-1">{w.course}</p>
-                                    <p className="text-sm font-bold opacity-80 mb-3 text-gray-600 dark:text-gray-400">إجمالي الغياب: {w.absentCount} جلسات</p>
+                                    <p className="text-sm font-bold opacity-80 mb-2 text-gray-600 dark:text-gray-400">إجمالي الغياب: {w.absentCount} جلسات</p>
+                                    {/* رسالة التنبيه داخل البطاقة */}
+                                    {w.type === 'warning' && (
+                                        <p className="text-xs font-bold text-yellow-700 dark:text-yellow-300 bg-yellow-100 dark:bg-yellow-900/40 p-2 rounded-lg mt-2">
+                                            ⚠️ يرجى الانتباه! غياب جلسة أخرى سيؤدي إلى حرمانك نهائياً من هذا المقرر.
+                                        </p>
+                                    )}
+                                    {w.type === 'deprived' && (
+                                        <p className="text-xs font-bold text-red-700 dark:text-red-300 bg-red-100 dark:bg-red-900/40 p-2 rounded-lg mt-2">
+                                            ⛔ لقد تم حرمانك من هذا المقرر لتجاوز نسبة الغياب المسموح بها، ولن يقبل النظام تسجيلك في الجلسات القادمة.
+                                        </p>
+                                    )}
                                 </div>
                             ))}
                         </div>
@@ -1491,48 +1492,41 @@
         };
 
         const handleBatchAdd = async () => {
-    if (!batchText.trim()) return;
-    const lines = batchText.trim().split('\n');
-    const studentsToAdd = [];
-    for (let line of lines) {
-        line = line.trim();
-        if (!line) continue;
-        // البحث عن أول 14 رقم متتالي (الرقم القومي)
-        const match = line.match(/(\d{14})/);
-        if (!match) continue; // تخطي السطور التي لا تحتوي على رقم قومي صحيح
-        const nationalId = match[1];
-        const idIndex = match.index;
-        // الاسم هو كل النص قبل الرقم
-        let name = line.substring(0, idIndex).trim();
-        // ما بعد الرقم يعتبر كلمة مرور (اختياري) مع إزالة المسافات
-        let pass = line.substring(idIndex + 14).trim();
-        // إذا لم يتم إدخال كلمة مرور، نضعها فارغة
-        if (name && nationalId) {
-            studentsToAdd.push({ name, id: nationalId, pass });
-        }
-    }
-    if (studentsToAdd.length === 0) {
-        showToast({ type: 'error', message: 'لم يتم العثور على بيانات صالحة (تأكد من وجود الرقم القومي 14 رقم)' });
-        return;
-    }
-    const ok = await confirm({
-        title: 'تأكيد الإضافة الجماعية',
-        message: `هل تريد إضافة ${studentsToAdd.length} طالب دفعة واحدة؟`,
-        type: 'primary'
-    });
-    if (!ok) return;
-    setLoading(true);
-    const res = await runServer('adminAction', { type: 'batchAddStudents', uni, course, students: studentsToAdd });
-    setLoading(false);
-    if (res.status === 'success') {
-        showToast({ type: 'success', message: res.message });
-        setShowBatchModal(false);
-        setBatchText('');
-        load();
-    } else {
-        showToast({ type: 'error', message: res.message || 'حدث خطأ' });
-    }
-};
+            if (!batchText.trim()) return;
+            const lines = batchText.trim().split('\n');
+            const studentsToAdd = [];
+            for (let line of lines) {
+                line = line.trim();
+                if (!line) continue;
+                // البحث عن أول 14 رقم متتالي
+                const match = line.match(/(\d{14})/);
+                if (!match) continue;
+                const nationalId = match[1];
+                const idIndex = match.index;
+                let name = line.substring(0, idIndex).trim();
+                let pass = line.substring(idIndex + 14).trim();
+                if (name && nationalId) {
+                    studentsToAdd.push({ name, id: nationalId, pass });
+                }
+            }
+            if (studentsToAdd.length === 0) {
+                showToast({ type: 'error', message: 'لم يتم العثور على بيانات صالحة (تأكد من وجود الرقم القومي 14 رقم)' });
+                return;
+            }
+            const ok = await confirm({ title: 'تأكيد الإضافة الجماعية', message: `هل تريد إضافة ${studentsToAdd.length} طالب دفعة واحدة؟`, type: 'primary' });
+            if (!ok) return;
+            setLoading(true);
+            const res = await runServer('adminAction', { type: 'batchAddStudents', uni, course, students: studentsToAdd });
+            setLoading(false);
+            if (res.status === 'success') {
+                showToast({ type: 'success', message: res.message });
+                setShowBatchModal(false);
+                setBatchText('');
+                load();
+            } else {
+                showToast({ type: 'error', message: res.message || 'حدث خطأ' });
+            }
+        };
 
         const getGender = (id) => {
             if (!id || String(id).length !== 14) return 'غير محدد';
@@ -1625,8 +1619,8 @@
                 </Modal>
 
                 <Modal isOpen={showBatchModal} onClose={() => setShowBatchModal(false)} title="إضافة دفعة طلاب">
-                    <p className="text-sm text-gray-500 dark:text-gray-400 mb-2">أدخل بيانات الطلاب كل طالب في سطر منفصل، بالصيغة: الاسم الرقم القومي (كلمة المرور اختيارية)</p>
-                    <textarea rows="10" className="w-full p-3 border dark:border-gray-600 bg-white dark:bg-gray-700 dark:text-white rounded-xl mb-4 outline-none focus:ring-2 focus:ring-blue-400 font-mono text-sm" value={batchText} onChange={e => setBatchText(e.target.value)} placeholder="أحمد 12345678901234 12345&#10;محمد 12345678901235"></textarea>
+                    <p className="text-sm text-gray-500 dark:text-gray-400 mb-2">أدخل بيانات الطلاب كل طالب في سطر منفصل، بالصيغة: الاسم ثم الرقم القومي (14 رقم) ثم كلمة المرور (اختياري) - مثال: أحمد محمد علي 12345678901234 12345</p>
+                    <textarea rows="10" className="w-full p-3 border dark:border-gray-600 bg-white dark:bg-gray-700 dark:text-white rounded-xl mb-4 outline-none focus:ring-2 focus:ring-blue-400 font-mono text-sm" value={batchText} onChange={e => setBatchText(e.target.value)} placeholder="أحمد محمد علي 12345678901234 12345&#10;محمد سعيد 12345678901235"></textarea>
                     <Button loading={loading} onClick={handleBatchAdd} className="w-full bg-purple-600 text-white py-3 rounded-xl font-bold">إضافة الدفعة</Button>
                 </Modal>
             </div>
