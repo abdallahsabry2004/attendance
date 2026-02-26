@@ -6,6 +6,16 @@
   <title>نظام الحضور</title>
   <link rel="icon" type="image/svg+xml" href="favicon.svg">
   <link rel="apple-touch-icon" href="favicon.svg">
+  <link rel="manifest" href="manifest.json">
+  <meta name="theme-color" content="#2563EB">
+  
+  <script>
+    if ('serviceWorker' in navigator) {
+      window.addEventListener('load', () => {
+        navigator.serviceWorker.register('./sw.js');
+      });
+    }
+  </script>
   
   <script src="https://cdn.tailwindcss.com"></script>
   <script>
@@ -2283,17 +2293,59 @@
         const [checked, setChecked] = useState(false);
         const { theme, toggleTheme } = useTheme();
 
+        // --- متغيرات تثبيت التطبيق (PWA) ---
+        const [deferredPrompt, setDeferredPrompt] = useState(null);
+        const [showInstallBtn, setShowInstallBtn] = useState(false);
+
         useEffect(() => {
             const stored = localStorage.getItem('sys_user');
             if (stored) setUser(JSON.parse(stored));
             setChecked(true);
+
+            // --- التقاط حدث إمكانية التثبيت من المتصفح ---
+            const handleBeforeInstallPrompt = (e) => {
+                e.preventDefault(); // منع المتصفح من إظهار النافذة العشوائية
+                setDeferredPrompt(e); // حفظ الحدث برمجياً
+                setShowInstallBtn(true); // إظهار الزر المخصص الخاص بنا
+            };
+
+            window.addEventListener('beforeinstallprompt', handleBeforeInstallPrompt);
+
+            return () => {
+                window.removeEventListener('beforeinstallprompt', handleBeforeInstallPrompt);
+            };
         }, []);
+
+        // --- دالة الضغط على زر "تثبيت التطبيق" ---
+        const handleInstallClick = async () => {
+            if (deferredPrompt) {
+                deferredPrompt.prompt(); // إظهار نافذة التثبيت الرسمية للنظام
+                const { outcome } = await deferredPrompt.userChoice; // انتظار اختيار المستخدم
+                if (outcome === 'accepted') {
+                    console.log('تم قبول تثبيت التطبيق');
+                }
+                setDeferredPrompt(null);
+                setShowInstallBtn(false);
+            }
+        };
 
         if(!checked) return <FullScreenLoader />;
 
         return (
-            <div className="flex flex-col min-h-screen">
-                <div className="flex-1 flex flex-col">
+            <div className="flex flex-col min-h-screen relative">
+                
+                {/* --- شريط التثبيت الذكي (يظهر فقط إذا كان الجهاز يدعم التثبيت ولم يتم تثبيته بعد) --- */}
+                {showInstallBtn && (
+                    <div className="bg-blue-600 dark:bg-blue-800 text-white p-3 text-center text-sm font-bold flex flex-col sm:flex-row justify-center sm:justify-between items-center gap-3 z-[200] shadow-md fade-in">
+                        <span>📱 هل ترغب في تثبيت النظام كتطبيق على جهازك للوصول السريع؟</span>
+                        <div className="flex gap-2 items-center">
+                            <button onClick={handleInstallClick} className="bg-white text-blue-600 px-4 py-1.5 rounded-xl hover:bg-gray-100 transition shadow-sm">تثبيت الآن</button>
+                            <button onClick={() => setShowInstallBtn(false)} className="text-blue-200 hover:text-white text-2xl leading-none px-2">&times;</button>
+                        </div>
+                    </div>
+                )}
+
+                <div className="flex-1 flex flex-col mt-0">
                     {!user ? <LoginScreen onLogin={setUser} theme={theme} toggleTheme={toggleTheme} /> : 
                      (user.role === 'admin' || user.role === 'moderator') ? <AdminDashboard user={user} onLogout={()=>setUser(null)} theme={theme} toggleTheme={toggleTheme} /> : 
                      <StudentDashboard user={user} onLogout={()=>setUser(null)} theme={theme} toggleTheme={toggleTheme} />}
