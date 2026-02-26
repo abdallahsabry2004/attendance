@@ -69,14 +69,11 @@
     const SUPABASE_ANON_KEY = "eyJhbGciOiJIUzI1NiIsInR5cCI6IkpXVCJ9.eyJpc3MiOiJzdXBhYmFzZSIsInJlZiI6InBldXpvaGNobmtwY2Vzb2F0amR6Iiwicm9sZSI6ImFub24iLCJpYXQiOjE3NzIxMDM2MDYsImV4cCI6MjA4NzY3OTYwNn0.TFkjH9bRs5Rxa6gYvBlFpRXmAU28rri-RzeXH59gxQI";
     const supabase = window.supabase.createClient(SUPABASE_URL, SUPABASE_ANON_KEY);
 
-// --- دالة الاتصال الجديدة (runServer) المطابقة 100% لتفاصيل Code.gs القديم ---
+// --- دالة الاتصال الجديدة (runServer) المطابقة 100% لـ Code.gs ---
     const runServer = async (action, payload = {}) => {
       try {
         switch (action) {
           
-          // ==========================================
-          // 1. نظام تسجيل الدخول وتغيير كلمة المرور
-          // ==========================================
           case 'login': {
             const { data, error } = await supabase.from('users_data').select('*').eq('national_id', payload.nationalId).maybeSingle(); 
             if (error || !data) return { status: 'error', message: 'الرقم القومي غير مسجل' };
@@ -105,62 +102,48 @@
             return { status: 'success', message: 'تم تحديث كلمة المرور بنجاح' };
           }
 
-          // ==========================================
-          // 2. تسجيل الحضور (مسح الـ QR) - مطابق للمنطق القديم بالحرف
-          // ==========================================
+          // تسجيل الحضور - تمت مراجعة جميع شروط الحرمان والتكرار ودمج الجلسات
           case 'scanAttendance': {
-            // جلب الطالب
             const { data: student } = await supabase.from('users_data').select('id, full_name').eq('national_id', payload.nationalId).single();
             if (!student) return { status: 'error', message: 'الطالب غير موجود' };
 
-            // البحث عن الجلسة
             const { data: sessionData } = await supabase.from('sessions').select('*, users_data!creator_id(full_name)').or(`qr_code.eq.${payload.qrData},pin_code.eq.${payload.qrData}`).maybeSingle();
             if (!sessionData) return { status: 'error', message: 'الرمز غير صحيح أو الجلسة غير موجودة' };
             if (!sessionData.is_active) return { status: 'error', message: 'تم إغلاق الجلسة' };
 
-            // التحقق من انتهاء الوقت
             const createdTime = new Date(sessionData.created_at);
-            const diffMinutes = (new Date() - createdTime) / 1000 / 60;
-            if (diffMinutes > sessionData.duration_minutes) {
+            if (((new Date() - createdTime) / 1000 / 60) > sessionData.duration_minutes) {
                  await supabase.from('sessions').update({ is_active: false }).eq('id', sessionData.id);
                  return { status: 'error', message: 'انتهى الوقت المحدد للجلسة' };
             }
 
-            // التحقق من التسجيل في المقرر
             const { data: enroll } = await supabase.from('course_enrollments').select('id').eq('course_id', sessionData.course_id).eq('student_id', student.id).maybeSingle();
             if (!enroll) return { status: 'error', message: 'غير مسجل في هذا المقرر' };
 
-            // التحقق من الحرمان (4 غيابات سابقة)
-            const { data: previousSessions } = await supabase.from('sessions').select('id').eq('course_id', sessionData.course_id).lt('created_at', sessionData.created_at);
-            if (previousSessions && previousSessions.length > 0) {
-                const prevSessionIds = previousSessions.map(s => s.id);
-                const { count: attendedPrev } = await supabase.from('attendance_logs').select('*', { count: 'exact', head: true }).eq('student_id', student.id).in('session_id', prevSessionIds);
-                const absencesBeforeThis = previousSessions.length - (attendedPrev || 0);
-                if (absencesBeforeThis >= 4) {
+            // فحص الحرمان (4 غيابات في الجلسات التي تسبق هذه الجلسة)
+            const { data: prevSessions } = await supabase.from('sessions').select('session_name').eq('course_id', sessionData.course_id).lt('created_at', sessionData.created_at);
+            const uniquePrevSessionNames = [...new Set((prevSessions||[]).map(s=>s.session_name))];
+            if (uniquePrevSessionNames.length > 0) {
+                const { count: attendedPrev } = await supabase.from('attendance_logs').select('*', { count: 'exact', head: true }).eq('student_id', student.id).eq('course_id', sessionData.course_id).in('session_name', uniquePrevSessionNames);
+                if ((uniquePrevSessionNames.length - (attendedPrev || 0)) >= 4) {
                      return { status: 'error', message: 'عذراً، لقد تم حرمانك من المقرر لتجاوز نسبة الغياب.' };
                 }
             }
 
-            // التحقق من التسجيل المسبق (مع نفس المدير أو مدير آخر)
-            const { data: existingLog } = await supabase.from('attendance_logs').select('scanned_by, users_data!scanned_by(full_name)').eq('session_id', sessionData.id).eq('student_id', student.id).maybeSingle();
+            // فحص التسجيل المسبق في نفس "العمود" (مع نفس المدير أو مدير آخر)
+            const { data: existingLog } = await supabase.from('attendance_logs').select('scanned_by, users_data!scanned_by(full_name)').eq('course_id', sessionData.course_id).eq('session_name', sessionData.session_name).eq('student_id', student.id).maybeSingle();
             if (existingLog) {
                 const creatorName = sessionData.users_data ? sessionData.users_data.full_name : 'غير معروف';
                 const scannerName = existingLog.users_data ? existingLog.users_data.full_name : 'مدير آخر';
-                if (existingLog.scanned_by === sessionData.creator_id) {
-                    return { status: 'error', message: `تم تسجيل الحضور مسبقاً مع ${creatorName}` };
-                } else {
-                    return { status: 'error', message: `مسجل حضور بالفعل مع ${scannerName}` };
-                }
+                if (existingLog.scanned_by === sessionData.creator_id) return { status: 'error', message: `تم تسجيل الحضور مسبقاً مع ${creatorName}` };
+                else return { status: 'error', message: `مسجل حضور بالفعل مع ${scannerName}` };
             }
 
-            // تسجيل الحضور 
-            await supabase.from('attendance_logs').insert({ session_id: sessionData.id, student_id: student.id, scanned_by: sessionData.creator_id });
+            // تسجيل الحضور
+            await supabase.from('attendance_logs').insert({ course_id: sessionData.course_id, session_name: sessionData.session_name, student_id: student.id, scanned_by: sessionData.creator_id });
             return { status: 'success', message: 'تم تسجيل الحضور بنجاح' };
           }
 
-          // ==========================================
-          // 3. شاشات الطالب 
-          // ==========================================
           case 'getStudentData': {
             const { data, error } = await supabase.from('users_data').select('id, course_enrollments(courses(course_name))').eq('national_id', payload.nationalId).single();
             if (error || !data) return { status: 'error', message: 'خطأ في جلب المقررات' };
@@ -173,18 +156,28 @@
             const { data: course } = await supabase.from('courses').select('id').eq('university', payload.uni).eq('course_name', payload.course).single();
             if (!student || !course) return { status: 'error', message: 'بيانات غير موجودة' };
 
-            const { data: sessions } = await supabase.from('sessions').select('id, session_name, created_at, users_data!creator_id(full_name)').eq('course_id', course.id).order('created_at', { ascending: true });
-            const { data: attendance } = await supabase.from('attendance_logs').select('session_id, scanned_at, status, users_data!scanned_by(full_name)').eq('student_id', student.id);
+            const { data: allSessions } = await supabase.from('sessions').select('session_name, created_at').eq('course_id', course.id).order('created_at', { ascending: true });
+            const orderedSessionNames = [...new Set((allSessions||[]).map(s=>s.session_name))]; // استخراج الأعمدة الفريدة
+
+            const { data: attendance } = await supabase.from('attendance_logs').select('session_name, scanned_at, users_data!scanned_by(full_name)').eq('student_id', student.id).eq('course_id', course.id);
             
             let presentCount = 0; let absentCount = 0; let formattedSessions = [];
-            (sessions || []).forEach(s => {
-                const record = (attendance || []).find(a => a.session_id === s.id);
+            orderedSessionNames.forEach(sName => {
+                const record = (attendance || []).find(a => a.session_name === sName);
                 const isPresent = !!record;
                 if (isPresent) presentCount++; else absentCount++;
-                const dateObj = new Date(isPresent ? record.scanned_at : s.created_at);
-                const scannerName = isPresent && record.users_data ? record.users_data.full_name : '';
-                const timeStr = isPresent ? `${dateObj.toLocaleString('ar-EG', { timeZone: 'Africa/Cairo' })} - (مع ${scannerName})` : dateObj.toLocaleString('ar-EG', { timeZone: 'Africa/Cairo' });
-                formattedSessions.push({ name: s.session_name, status: isPresent ? 'حضور' : 'غياب', time: timeStr, color: isPresent ? 'green' : 'red' });
+                
+                let timeStr = "-";
+                if(isPresent) {
+                    const dateObj = new Date(record.scanned_at);
+                    const scannerName = record.users_data ? record.users_data.full_name : '';
+                    timeStr = `${dateObj.toLocaleString('ar-EG', { timeZone: 'Africa/Cairo' })} - (مع ${scannerName})`;
+                } else {
+                    const sessionInfo = allSessions.find(s=>s.session_name === sName);
+                    if(sessionInfo) timeStr = new Date(sessionInfo.created_at).toLocaleString('ar-EG', { timeZone: 'Africa/Cairo' });
+                }
+                
+                formattedSessions.push({ name: sName, status: isPresent ? 'حضور' : 'غياب', time: timeStr, color: isPresent ? 'green' : 'red' });
             });
             return { status: 'success', data: { sessions: formattedSessions, presentCount, absentCount } };
           }
@@ -196,57 +189,53 @@
             if(!enrollments || enrollments.length === 0) return { status: 'success', warnings: [] };
 
             const courseIds = enrollments.map(e => e.course_id);
-            const { data: allSessions } = await supabase.from('sessions').select('id, course_id').in('course_id', courseIds);
-            const { data: allAttendance } = await supabase.from('attendance_logs').select('session_id').eq('student_id', student.id);
-            const attendedSessionIds = new Set((allAttendance || []).map(a => a.session_id));
+            const { data: allSessions } = await supabase.from('sessions').select('course_id, session_name').in('course_id', courseIds);
+            const { data: allAttendance } = await supabase.from('attendance_logs').select('course_id, session_name').eq('student_id', student.id).in('course_id', courseIds);
+            
             let warnings = [];
-
             enrollments.forEach(enroll => {
-                const courseSessions = (allSessions || []).filter(s => s.course_id === enroll.course_id);
+                const cSessions = (allSessions||[]).filter(s => s.course_id === enroll.course_id);
+                const uniqueSessionNames = [...new Set(cSessions.map(s=>s.session_name))];
                 let absentCount = 0;
-                courseSessions.forEach(cs => { if (!attendedSessionIds.has(cs.id)) absentCount++; });
+                uniqueSessionNames.forEach(sName => {
+                    const attended = (allAttendance||[]).some(a => a.course_id === enroll.course_id && a.session_name === sName);
+                    if (!attended) absentCount++;
+                });
                 if (absentCount >= 3) warnings.push({ course: enroll.courses.course_name, absentCount, type: absentCount >= 4 ? 'deprived' : 'warning' });
             });
             return { status: 'success', warnings };
           }
 
-          // ==========================================
-          // 4. أوامر الإدارة الشاملة (Admin Actions)
-          // ==========================================
+          // أوامر الإدارة الشاملة (التعامل مع المقررات ودمج الجلسات)
           case 'adminAction': {
               const { type, role, name, uni, course, courseName } = payload;
-              
               let adminUuid = null;
               if (name) {
                   const { data: uData } = await supabase.from('users_data').select('id').eq('full_name', name).limit(1).single();
                   if (uData) adminUuid = uData.id;
               }
 
-              // التصفية للمساعدين لعرض مقرراتهم فقط
               if (type === 'getAdminData') {
                   const { data: allCourses } = await supabase.from('courses').select('*');
                   let allowedCourses = allCourses || [];
-
                   if (role === 'moderator' && adminUuid) {
                       const { data: mySessions } = await supabase.from('sessions').select('course_id').eq('creator_id', adminUuid);
                       const myCourseIds = [...new Set((mySessions||[]).map(s => s.course_id))];
                       allowedCourses = allowedCourses.filter(c => myCourseIds.includes(c.id));
                   }
-
                   const tree = {};
                   allowedCourses.forEach(c => {
                       if (!tree[c.university]) tree[c.university] = [];
                       tree[c.university].push(c.course_name);
                   });
-                  
                   const { data: mods } = await supabase.from('users_data').select('national_id, full_name').eq('role', 'moderator');
                   const moderators = (mods || []).map(m => ({ name: m.full_name, id: m.national_id }));
+                  
+                  // جلب المقررات المقترحة (الفريدة من قاعدة البيانات)
                   const materials = [...new Set((allCourses || []).map(c => c.course_name))];
-
                   return { status: 'success', data: tree, materials, moderators };
               }
 
-              // جلب مديري المقرر للتقرير المنفصل
               if (type === 'getCourseModerators') {
                   const { data: cData } = await supabase.from('courses').select('id').eq('university', uni).eq('course_name', course).single();
                   if(!cData) return { status: 'success', courseModerators: [] };
@@ -264,7 +253,7 @@
                   return error ? { status: 'error' } : { status: 'success' };
               }
 
-              // إدارة المقررات (المدير يحذف كل شيء، المساعد يحذف جلساته فقط)
+              // إدارة المقررات 
               if (type === 'addCourse') {
                   const { error } = await supabase.from('courses').insert({ university: uni, course_name: courseName, created_by: adminUuid });
                   if (error) return { status: 'error', message: 'المقرر موجود بالفعل أو حدث خطأ' };
@@ -279,13 +268,12 @@
                       if (cData && adminUuid) {
                           await supabase.from('sessions').delete().eq('course_id', cData.id).eq('creator_id', adminUuid);
                           const { count } = await supabase.from('sessions').select('*', {count: 'exact', head: true}).eq('course_id', cData.id);
-                          if (count === 0) await supabase.from('courses').delete().eq('id', cData.id);
+                          if (count === 0) await supabase.from('courses').delete().eq('id', cData.id); // يحذف المقرر نهائياً لو كان هو المدير الوحيد
                       }
                   }
                   return { status: 'success' };
               }
 
-              // إدارة الطلاب داخل المقرر
               if (type === 'getCourseStudents') {
                   const { data: cData } = await supabase.from('courses').select('id').eq('university', uni).eq('course_name', course).single();
                   if (!cData) return { status: 'error' };
@@ -293,10 +281,26 @@
                   const students = (enrollments || []).map((e, i) => ({ name: e.users_data.full_name, id: e.users_data.national_id, pass: e.users_data.password, rowIndex: i }));
                   return { status: 'success', students };
               }
+              
               if (type === 'manageStudent') {
-                  const { actionType, studentData } = payload;
+                  const { actionType, studentData, bulkStudents } = payload;
                   const { data: cData } = await supabase.from('courses').select('id').eq('university', uni).eq('course_name', course).single();
                   if(!cData) return { status: 'error' };
+
+                  // إضافة الطلاب دفعة واحدة من الإكسيل
+                  if (actionType === 'bulkAdd' && bulkStudents) {
+                      for(let stu of bulkStudents) {
+                          let { data: uData } = await supabase.from('users_data').select('id').eq('national_id', stu.id).maybeSingle();
+                          if (!uData) {
+                              const { data: newUser } = await supabase.from('users_data').insert({ national_id: stu.id, full_name: stu.name, password: '', role: 'student' }).select('id').single();
+                              uData = newUser;
+                          }
+                          if(uData) {
+                              await supabase.from('course_enrollments').upsert({ course_id: cData.id, student_id: uData.id });
+                          }
+                      }
+                      return { status: 'success', message: 'تم إضافة الدفعة بنجاح' };
+                  }
 
                   if (actionType === 'add' || actionType === 'edit') {
                       let { data: uData } = await supabase.from('users_data').select('id').eq('national_id', studentData.id).maybeSingle();
@@ -308,7 +312,7 @@
                           await supabase.from('users_data').update({ full_name: studentData.name, password: studentData.pass || '' }).eq('id', uData.id);
                       }
                       if (actionType === 'add') {
-                          await supabase.from('course_enrollments').insert({ course_id: cData.id, student_id: uData.id });
+                          await supabase.from('course_enrollments').upsert({ course_id: cData.id, student_id: uData.id });
                       }
                       return { status: 'success' };
                   }
@@ -319,37 +323,39 @@
                   }
               }
 
-              // جلب الإنذارات للإدارة
               if (type === 'getCourseWarnings') {
                   const { warningType } = payload;
                   const { data: cData } = await supabase.from('courses').select('id').eq('university', uni).eq('course_name', course).single();
                   if(!cData) return { status: 'error' };
 
                   const { data: enrollments } = await supabase.from('course_enrollments').select('users_data(full_name, national_id, id)').eq('course_id', cData.id);
-                  const { data: sessions } = await supabase.from('sessions').select('id').eq('course_id', cData.id);
-                  const { data: attendance } = await supabase.from('attendance_logs').select('student_id, session_id').in('session_id', (sessions||[]).map(s=>s.id));
+                  const { data: allSessions } = await supabase.from('sessions').select('session_name').eq('course_id', cData.id);
+                  const uniqueSessionNames = [...new Set((allSessions||[]).map(s=>s.session_name))];
+                  const { data: attendance } = await supabase.from('attendance_logs').select('student_id, session_name').eq('course_id', cData.id);
 
-                  const totalSessions = (sessions||[]).length;
                   let warnings = [];
-
                   (enrollments||[]).forEach(e => {
                       const stu = e.users_data;
-                      const stuAtt = (attendance||[]).filter(a => a.student_id === stu.id).length;
-                      const absentCount = totalSessions - stuAtt;
-
+                      let absentCount = 0;
+                      uniqueSessionNames.forEach(sName => {
+                          const attended = (attendance||[]).some(a => a.student_id === stu.id && a.session_name === sName);
+                          if (!attended) absentCount++;
+                      });
                       if (warningType === 'warning' && absentCount === 3) warnings.push({ name: stu.full_name, id: stu.national_id, absentCount });
                       else if (warningType === 'deprived' && absentCount >= 4) warnings.push({ name: stu.full_name, id: stu.national_id, absentCount });
                   });
                   return { status: 'success', warnings };
               }
 
-              // الجلسات والـ QR
               if (type === 'getLastSession') {
                   const { data: cData } = await supabase.from('courses').select('id').eq('university', uni).eq('course_name', course).single();
                   if(!cData) return { status: 'success', lastSession: 'لا يوجد' };
-                  let query = supabase.from('sessions').select('*', { count: 'exact', head: true }).eq('course_id', cData.id);
+                  
+                  let query = supabase.from('sessions').select('session_name').eq('course_id', cData.id);
                   if (role === 'moderator' && adminUuid) query = query.eq('creator_id', adminUuid); 
-                  const { count } = await query;
+                  const { data: mySessions } = await query;
+                  const count = new Set((mySessions||[]).map(s=>s.session_name)).size;
+                  
                   return { status: 'success', lastSession: count > 0 ? "الجلسة " + count : 'لا يوجد' };
               }
 
@@ -362,11 +368,12 @@
                   let targetSessionName = sessionNameOverride;
 
                   if (type === 'createSession') {
-                      let query = supabase.from('sessions').select('*', { count: 'exact', head: true }).eq('course_id', cData.id);
+                      let query = supabase.from('sessions').select('session_name').eq('course_id', cData.id);
                       if (role === 'moderator' && adminUuid) query = query.eq('creator_id', adminUuid);
-                      const { count } = await query;
+                      const { data: mySessions } = await query;
+                      const count = new Set((mySessions||[]).map(s=>s.session_name)).size;
                       
-                      targetSessionName = "الجلسة " + ((count || 0) + 1);
+                      targetSessionName = "الجلسة " + (count + 1);
                       const qrData = `${uni}|separator|${course}|separator|${targetSessionName}|separator|${pinCode}`;
                       const { error } = await supabase.from('sessions').insert({ course_id: cData.id, session_name: targetSessionName, qr_code: qrData, pin_code: pinCode, duration_minutes: duration, creator_id: adminUuid });
                       if (error) return { status: 'error', message: 'حدث خطأ في إنشاء الجلسة' };
@@ -395,15 +402,13 @@
                   
                   let sessionStats = [];
                   for(const s of (sessions || [])) {
-                      // حساب الحضور الذي تم مع منشئ الجلسة فقط ليتطابق مع الكود القديم
-                      const { count: present } = await supabase.from('attendance_logs').select('*', {count: 'exact', head: true}).eq('session_id', s.id).eq('scanned_by', s.creator_id);
+                      const { count: present } = await supabase.from('attendance_logs').select('*', {count: 'exact', head: true}).eq('course_id', cData.id).eq('session_name', s.session_name).eq('scanned_by', s.creator_id);
                       
                       const createdTime = new Date(s.created_at);
-                      const diffMinutes = (new Date() - createdTime) / 1000 / 60;
                       let currentStatus = s.is_active ? 'يعمل' : 'لا يعمل';
-                      if(s.is_active && diffMinutes > s.duration_minutes) currentStatus = 'لا يعمل';
+                      if(s.is_active && ((new Date() - createdTime) / 1000 / 60) > s.duration_minutes) currentStatus = 'لا يعمل';
 
-                      sessionStats.push({ session: s.session_name, present: present || 0, absent: totalStudents - (present || 0), qrStatus: currentStatus, qrCode: s.qr_code, creationDate: new Date(s.created_at).toLocaleString('ar-EG', { timeZone: 'Africa/Cairo' }), creator: s.users_data ? s.users_data.full_name : 'غير معروف' });
+                      sessionStats.push({ session: s.session_name, present: present || 0, absent: totalStudents - (present || 0), qrStatus: currentStatus, qrCode: s.qr_code, creationDate: createdTime.toLocaleString('ar-EG', { timeZone: 'Africa/Cairo' }), creator: s.users_data ? s.users_data.full_name : 'غير معروف' });
                   }
                   sessionStats.sort((a, b) => a.session.localeCompare(b.session, 'ar', { numeric: true }));
                   return { status: 'success', sessions: sessionStats };
@@ -418,16 +423,13 @@
                   const { sessionName } = payload;
                   const { data: cData } = await supabase.from('courses').select('id').eq('university', uni).eq('course_name', course).single();
                   if(cData) {
-                      const { data: sData } = await supabase.from('sessions').select('id').eq('course_id', cData.id).eq('session_name', sessionName).single();
-                      if(sData) {
-                          if (role === 'admin') {
-                              await supabase.from('sessions').delete().eq('id', sData.id);
-                          } else {
-                              // المساعد يمسح حضوره هو فقط لكي لا يؤثر على المديرين الآخرين
-                              await supabase.from('attendance_logs').delete().eq('session_id', sData.id).eq('scanned_by', adminUuid);
-                              const { count } = await supabase.from('attendance_logs').select('*', {count: 'exact', head: true}).eq('session_id', sData.id);
-                              if (count === 0) await supabase.from('sessions').delete().eq('id', sData.id);
-                          }
+                      if (role === 'admin') {
+                          await supabase.from('sessions').delete().eq('course_id', cData.id).eq('session_name', sessionName);
+                          await supabase.from('attendance_logs').delete().eq('course_id', cData.id).eq('session_name', sessionName);
+                      } else {
+                          // المساعد يمسح حضوره وجلسته فقط
+                          await supabase.from('sessions').delete().eq('course_id', cData.id).eq('session_name', sessionName).eq('creator_id', adminUuid);
+                          await supabase.from('attendance_logs').delete().eq('course_id', cData.id).eq('session_name', sessionName).eq('scanned_by', adminUuid);
                       }
                   }
                   return { status: 'success' };
@@ -435,24 +437,24 @@
               return { status: 'error', message: 'غير مدعوم' };
           }
 
-          // ==========================================
-          // 5. التقارير الشاملة وإدارة الغياب يدوياً 
-          // ==========================================
+          // التقارير الشاملة مبنية على نظام دمج الأعمدة (session_name)
           case 'getCourseReport': {
             const { uni, course } = payload;
             const { data: cData } = await supabase.from('courses').select('id').eq('university', uni).eq('course_name', course).single();
             if (!cData) return { status: 'error', message: 'المقرر غير موجود' };
 
-            const { data: sessions } = await supabase.from('sessions').select('id, session_name').eq('course_id', cData.id).order('created_at', { ascending: true });
-            const { data: enrollments } = await supabase.from('course_enrollments').select('users_data(id, full_name, national_id)').eq('course_id', cData.id);
-            const { data: attendance } = await supabase.from('attendance_logs').select('student_id, session_id, scanned_at, users_data!scanned_by(full_name)').in('session_id', (sessions||[]).map(s=>s.id));
+            const { data: allSessions } = await supabase.from('sessions').select('session_name, created_at').eq('course_id', cData.id).order('created_at', { ascending: true });
+            const orderedSessionNames = [...new Set((allSessions||[]).map(s=>s.session_name))];
 
-            const headers = ["اسم الطالب", "حضور", "غياب", "الرقم القومي", ...(sessions||[]).map(s => s.session_name)];
+            const { data: enrollments } = await supabase.from('course_enrollments').select('users_data(id, full_name, national_id)').eq('course_id', cData.id);
+            const { data: attendance } = await supabase.from('attendance_logs').select('student_id, session_name, scanned_at, users_data!scanned_by(full_name)').eq('course_id', cData.id);
+
+            const headers = ["اسم الطالب", "حضور", "غياب", "الرقم القومي", ...orderedSessionNames];
             const rows = (enrollments || []).map(e => {
                 const stu = e.users_data;
                 let present = 0; let absent = 0;
-                const sessionStatuses = (sessions||[]).map(s => {
-                    const rec = (attendance||[]).find(a => a.student_id === stu.id && a.session_id === s.id);
+                const sessionStatuses = orderedSessionNames.map(sName => {
+                    const rec = (attendance||[]).find(a => a.student_id === stu.id && a.session_name === sName);
                     if (rec) { 
                         present++; 
                         const scannerName = rec.users_data ? rec.users_data.full_name : '';
@@ -474,22 +476,22 @@
             const { data: cData } = await supabase.from('courses').select('id').eq('university', uni).eq('course_name', course).single();
             if (!cData) return { status: 'error' };
 
-            const { data: sessions } = await supabase.from('sessions').select('id, session_name').eq('course_id', cData.id).order('created_at', { ascending: true });
+            const { data: allSessions } = await supabase.from('sessions').select('session_name, created_at').eq('course_id', cData.id).order('created_at', { ascending: true });
             const { data: enrollments } = await supabase.from('course_enrollments').select('users_data(id, full_name, national_id)').eq('course_id', cData.id);
             
-            let attQuery = supabase.from('attendance_logs').select('student_id, session_id, scanned_at, users_data!scanned_by(full_name)').in('session_id', (sessions||[]).map(s=>s.id));
+            let attQuery = supabase.from('attendance_logs').select('student_id, session_name, scanned_at, users_data!scanned_by(full_name)').eq('course_id', cData.id);
             if (modId) attQuery = attQuery.eq('scanned_by', modId);
             const { data: attendance } = await attQuery;
 
-            const sessionIdsWithModAtt = [...new Set((attendance||[]).map(a=>a.session_id))];
-            const filteredSessions = (sessions||[]).filter(s => sessionIdsWithModAtt.includes(s.id));
-            const headers = ["اسم الطالب", "حضور", "غياب", "الرقم القومي", ...filteredSessions.map(s => s.session_name)];
-
+            const sessionIdsWithModAtt = [...new Set((attendance||[]).map(a=>a.session_name))];
+            const filteredSessionNames = [...new Set((allSessions||[]).map(s=>s.session_name))].filter(name => sessionIdsWithModAtt.includes(name));
+            
+            const headers = ["اسم الطالب", "حضور", "غياب", "الرقم القومي", ...filteredSessionNames];
             const rows = (enrollments || []).map(e => {
                 const stu = e.users_data;
                 let present = 0; let absent = 0;
-                const sessionStatuses = filteredSessions.map(s => {
-                    const rec = (attendance||[]).find(a => a.student_id === stu.id && a.session_id === s.id);
+                const sessionStatuses = filteredSessionNames.map(sName => {
+                    const rec = (attendance||[]).find(a => a.student_id === stu.id && a.session_name === sName);
                     if (rec) { 
                         present++; 
                         const scannerName = rec.users_data ? rec.users_data.full_name : '';
@@ -508,11 +510,8 @@
             const { data: cData } = await supabase.from('courses').select('id').eq('university', uni).eq('course_name', course).single();
             if(!cData) return { status: 'error' };
 
-            const { data: sData } = await supabase.from('sessions').select('id').eq('course_id', cData.id).eq('session_name', session).single();
-            if(!sData) return { status: 'error' };
-
             const { data: enrollments } = await supabase.from('course_enrollments').select('users_data(id, full_name, national_id)').eq('course_id', cData.id);
-            const { data: attendance } = await supabase.from('attendance_logs').select('student_id, scanned_at, users_data!scanned_by(full_name)').eq('session_id', sData.id);
+            const { data: attendance } = await supabase.from('attendance_logs').select('student_id, scanned_at, users_data!scanned_by(full_name)').eq('course_id', cData.id).eq('session_name', session);
 
             const report = (enrollments || []).map(e => {
                 const stu = e.users_data;
@@ -535,30 +534,30 @@
             if(!cData) return { status: 'error' };
 
             const { data: enrollments } = await supabase.from('course_enrollments').select('users_data!inner(id, full_name, national_id)').eq('course_id', cData.id).or(`full_name.ilike.%${query}%,national_id.ilike.%${query}%`, { foreignTable: 'users_data' });
-            const { data: sessions } = await supabase.from('sessions').select('id, session_name').eq('course_id', cData.id).order('created_at', { ascending: true });
+            
+            const { data: allSessions } = await supabase.from('sessions').select('session_name').eq('course_id', cData.id).order('created_at', { ascending: true });
+            const orderedSessionNames = [...new Set((allSessions||[]).map(s=>s.session_name))];
+
             const studentIds = (enrollments||[]).map(e => e.users_data.id);
-            const { data: attendance } = await supabase.from('attendance_logs').select('student_id, session_id').in('session_id', (sessions||[]).map(s=>s.id)).in('student_id', studentIds);
+            const { data: attendance } = await supabase.from('attendance_logs').select('student_id, session_name').eq('course_id', cData.id).in('student_id', studentIds);
 
             const results = (enrollments || []).map(e => {
                 const stu = e.users_data;
                 let present = 0; let absent = 0;
-                const stuSessions = (sessions||[]).map(s => {
-                    const isPresent = (attendance||[]).some(a => a.student_id === stu.id && a.session_id === s.id);
+                const stuSessions = orderedSessionNames.map(sName => {
+                    const isPresent = (attendance||[]).some(a => a.student_id === stu.id && a.session_name === sName);
                     if(isPresent) present++; else absent++;
-                    return { name: s.session_name, val: isPresent ? 'حضور' : 'غياب' };
+                    return { name: sName, val: isPresent ? 'حضور' : 'غياب' };
                 });
                 return { name: stu.full_name, id: stu.national_id, present, absent, sessions: stuSessions, rowIndex: stu.id };
             });
-            return { status: 'success', results, sessionHeaders: (sessions||[]).map(s=>s.session_name) };
+            return { status: 'success', results, sessionHeaders: orderedSessionNames };
           }
 
           case 'updateAttendanceCell': {
              const { uni, course, rowIndex: studentId, status, sessionName, editorName } = payload;
              const { data: cData } = await supabase.from('courses').select('id').eq('university', uni).eq('course_name', course).single();
              if(!cData) return { status: 'error' };
-
-             const { data: sData } = await supabase.from('sessions').select('id').eq('course_id', cData.id).eq('session_name', sessionName).single();
-             if(!sData) return { status: 'error' };
 
              let editorId = null;
              if(editorName) {
@@ -567,10 +566,10 @@
              }
 
              if (status === 'present') {
-                 await supabase.from('attendance_logs').insert({ session_id: sData.id, student_id: studentId, scanned_by: editorId || studentId });
+                 await supabase.from('attendance_logs').insert({ course_id: cData.id, session_name: sessionName, student_id: studentId, scanned_by: editorId || studentId });
                  return { status: 'success', newValue: `${new Date().toLocaleString('ar-EG', { timeZone: 'Africa/Cairo' })} - (مع ${editorName} - تعديل يدوي)` };
              } else {
-                 await supabase.from('attendance_logs').delete().eq('session_id', sData.id).eq('student_id', studentId);
+                 await supabase.from('attendance_logs').delete().eq('course_id', cData.id).eq('session_name', sessionName).eq('student_id', studentId);
                  return { status: 'success', newValue: '' };
              }
           }
@@ -584,825 +583,15 @@
       }
     };
 
-    // --- Hooks ---
-    const useTheme = () => {
-        const [theme, setTheme] = useState(() => localStorage.getItem('theme') || 'light');
-        useEffect(() => {
-            const root = window.document.documentElement;
-            if (theme === 'dark') {
-                root.classList.add('dark');
-            } else {
-                root.classList.remove('dark');
-            }
-            localStorage.setItem('theme', theme);
-        }, [theme]);
-        const toggleTheme = () => setTheme(prev => prev === 'dark' ? 'light' : 'dark');
-        return { theme, toggleTheme };
-    };
-
-    // --- Custom UI Components ---
-    const ThemeToggle = ({ theme, toggleTheme, className }) => (
-        <button onClick={toggleTheme} className={`p-2 rounded-full transition-colors ${theme==='dark' ? 'bg-gray-700 text-yellow-400 hover:bg-gray-600' : 'bg-gray-200 text-gray-600 hover:bg-gray-300'} ${className}`}>
-            {theme === 'dark' ? 
-                <svg className="w-5 h-5" fill="none" stroke="currentColor" viewBox="0 0 24 24"><path strokeLinecap="round" strokeLinejoin="round" strokeWidth="2" d="M12 3v1m0 16v1m9-9h-1M4 12H3m15.364 6.364l-.707-.707M6.343 6.343l-.707-.707m12.728 0l-.707.707M6.343 17.657l-.707.707M16 12a4 4 0 11-8 0 4 4 0 018 0z"></path></svg> 
-                : 
-                <svg className="w-5 h-5" fill="none" stroke="currentColor" viewBox="0 0 24 24"><path strokeLinecap="round" strokeLinejoin="round" strokeWidth="2" d="M20.354 15.354A9 9 0 018.646 3.646 9.003 9.003 0 0012 21a9.003 9.003 0 008.354-5.646z"></path></svg>
-            }
-        </button>
-    );
-
-    const FullScreenLoader = ({ text }) => (
-      <div className="fixed inset-0 bg-white/90 dark:bg-gray-900/90 backdrop-blur-sm flex flex-col justify-center items-center z-[100] fade-in">
-        <div className="w-12 h-12 border-4 border-blue-200 border-t-blue-600 rounded-full animate-spin mb-4"></div>
-        <span className="text-gray-700 dark:text-gray-200 font-bold">{text || 'جاري التحميل...'}</span>
-      </div>
-    );
-
-    const Button = ({ children, onClick, loading, className, disabled, ...props }) => (
-        <button 
-            onClick={onClick} 
-            disabled={loading || disabled} 
-            className={`${className} ${loading || disabled ? 'opacity-70 cursor-not-allowed' : ''} flex items-center justify-center gap-2 transition-transform active:scale-95`}
-            {...props}
-        >
-            {loading && <div className="loader-sm border-t-white"></div>}
-            {children}
-        </button>
-    );
-
-    const Modal = ({ isOpen, onClose, title, children }) => {
-      if (!isOpen) return null;
-      return (
-        <div className="fixed inset-0 z-50 flex items-center justify-center p-4 bg-black/70 backdrop-blur-sm fade-in overflow-y-auto">
-          <div className="bg-white dark:bg-gray-800 rounded-2xl shadow-2xl w-full max-w-2xl overflow-hidden my-8 border border-gray-100 dark:border-gray-700">
-            <div className="flex justify-between items-center p-4 border-b dark:border-gray-700 bg-gray-50 dark:bg-gray-900/50">
-              <h3 className="text-lg font-bold text-gray-800 dark:text-gray-100">{title}</h3>
-              <button onClick={onClose} className="text-gray-500 hover:text-red-600 dark:text-gray-400 dark:hover:text-red-400 text-2xl font-bold">&times;</button>
-            </div>
-            <div className="p-6 max-h-[75vh] overflow-y-auto text-gray-800 dark:text-gray-200">{children}</div>
-          </div>
-        </div>
-      );
-    };
-
-    const ConfirmationModal = ({ isOpen, onClose, onConfirm, title, message, confirmText, cancelText, type = 'danger', loading }) => {
-      if (!isOpen) return null;
-      const btnColor = type === 'danger' ? 'bg-red-600 hover:bg-red-700' : 'bg-blue-600 hover:bg-blue-700';
-      return (
-        <div className="fixed inset-0 z-[150] flex items-center justify-center p-4 bg-black/80 backdrop-blur-sm fade-in">
-          <div className="bg-white dark:bg-gray-800 rounded-2xl shadow-2xl w-full max-w-md overflow-hidden p-6 text-center border border-gray-100 dark:border-gray-700">
-            <h3 className="text-xl font-bold text-gray-800 dark:text-gray-100 mb-2">{title}</h3>
-            <p className="text-gray-600 dark:text-gray-300 mb-6 whitespace-pre-wrap">{message}</p>
-            <div className="flex gap-3 justify-center">
-              <Button loading={loading} onClick={onConfirm} className={`${btnColor} text-white px-6 py-2 rounded-xl font-bold min-w-[100px]`}>{confirmText || 'تأكيد'}</Button>
-              <button onClick={onClose} disabled={loading} className="bg-gray-100 dark:bg-gray-700 text-gray-600 dark:text-gray-200 px-6 py-2 rounded-xl font-bold hover:bg-gray-200 dark:hover:bg-gray-600 min-w-[100px]">{cancelText || 'إلغاء'}</button>
-            </div>
-          </div>
-        </div>
-      );
-    };
-
-    const Toast = ({ type, message, onClose }) => {
-      useEffect(() => { const t = setTimeout(onClose, 4000); return () => clearTimeout(t); }, [onClose]);
-      const colors = type === 'error' ? 'bg-red-500' : type === 'success' ? 'bg-green-500' : 'bg-blue-500';
-      return (
-        <div className={`fixed top-4 left-1/2 transform -translate-x-1/2 z-[110] ${colors} text-white px-6 py-3 rounded-full shadow-lg flex items-center gap-2 fade-in`}>
-          <span className="font-bold text-sm">{message}</span>
-          <button onClick={onClose} className="opacity-80 hover:opacity-100">&times;</button>
-        </div>
-      );
-    };
-
-    const useConfirm = () => {
-        const [config, setConfig] = useState(null);
-        const confirm = (props) => { return new Promise((resolve) => { setConfig({ ...props, resolve }); }); };
-        const handleConfirm = () => { config.resolve(true); setConfig(null); };
-        const handleCancel = () => { config.resolve(false); setConfig(null); };
-        return { confirm, config, handleConfirm, handleCancel };
-    };
-
-    // --- Main Screens ---
-    const LoginScreen = ({ onLogin, theme, toggleTheme }) => {
-        const [id, setId] = useState('');
-        const [password, setPassword] = useState('');
-        const [step, setStep] = useState(1);
-        const [showPass, setShowPass] = useState(false);
-        const [loading, setLoading] = useState(false);
-        const [error, setError] = useState('');
-        const [userName, setUserName] = useState('');
-        const [role, setRole] = useState('');
-
-        const handleCheckId = async (e) => {
-            e.preventDefault();
-            if(id.length < 5) { setError('الرقم غير صحيح'); return; }
-            setLoading(true); setError('');
-            try {
-                const res = await runServer('login', { nationalId: id });
-                if(res.status === 'success' && (res.role === 'admin' || res.role === 'moderator')) onLogin(res);
-                else if(res.status !== 'error') {
-                    setUserName(res.name); setRole(res.role);
-                    setStep(res.status === 'create_password' ? 3 : 2);
-                } else setError(res.message);
-            } catch(e) { setError('فشل الاتصال'); }
-            setLoading(false);
-        };
-
-        const handleSubmit = async () => {
-            setLoading(true);
-            const action = step === 3 ? 'registerPassword' : 'login';
-            const payload = step === 3 ? { nationalId: id, newPassword: password } : { nationalId: id, password };
-            try {
-                const res = await runServer(action, payload);
-                if(res.status === 'success') {
-                    const user = { role: res.role || role || 'student', name: res.name || userName, id };
-                    localStorage.setItem('sys_user', JSON.stringify(user));
-                    onLogin(user);
-                } else setError(res.message);
-            } catch(e) { setError('حدث خطأ'); }
-            setLoading(false);
-        };
-
-        return (
-            <div className="min-h-screen bg-gray-100 dark:bg-gray-950 flex items-center justify-center p-4 relative">
-                <div className="absolute top-4 left-4">
-                    <ThemeToggle theme={theme} toggleTheme={toggleTheme} />
-                </div>
-                {loading && <FullScreenLoader />}
-  
-                <div className="bg-white dark:bg-gray-800 w-full max-w-md rounded-2xl shadow-xl overflow-hidden border border-gray-100 dark:border-gray-700">
-                    <div className="bg-blue-600 dark:bg-blue-700 p-8 text-center text-white">
-                        <h1 className="text-2xl font-bold mb-2">نظام الحضور</h1>
-                    </div>
-                    <div className="p-8">
-                        {error && <div className="bg-red-100 dark:bg-red-900/30 text-red-700 dark:text-red-300 p-3 rounded-lg mb-4 text-sm font-bold text-center">{error}</div>}
-                        
-                        {step === 1 ? (
-                            <form onSubmit={handleCheckId}>
-                                <label className="block text-gray-700 dark:text-gray-300 font-bold mb-2 text-sm">الرقم القومي</label>
-                                <input type="number" value={id} onChange={e=>setId(e.target.value)} className="w-full p-3 border dark:border-gray-600 bg-white dark:bg-gray-700 dark:text-white rounded-xl mb-4 focus:ring-2 focus:ring-blue-500 outline-none transition-colors" required />
-                                <Button loading={loading} className="w-full bg-blue-600 text-white py-3 rounded-xl font-bold hover:bg-blue-700 transition shadow-md shadow-blue-200 dark:shadow-none">التالي</Button>
-                            </form>
-                        ) : (
-                            <div>
-                                <div className="text-center mb-6">
-                                    <p className="text-gray-500 dark:text-gray-400 text-sm">مرحباً</p>
-                                    <h2 className="text-xl font-bold text-gray-800 dark:text-white">{userName}</h2>
-                                    {step === 3 && <span className="bg-orange-100 text-orange-800 dark:bg-orange-900/50 dark:text-orange-200 text-xs px-2 py-1 rounded">تعيين كلمة مرور جديدة</span>}
-                                </div>
-                                <div className="relative mb-4">
-                                    <input type={showPass ? "text" : "password"} value={password} onChange={e=>setPassword(e.target.value)} className="w-full p-3 border dark:border-gray-600 bg-white dark:bg-gray-700 dark:text-white rounded-xl focus:ring-2 focus:ring-blue-500 outline-none transition-colors" placeholder="كلمة المرور" />
-                                    <button onClick={()=>setShowPass(!showPass)} className="absolute left-3 top-3 text-gray-400 hover:text-blue-600 dark:hover:text-blue-400 text-sm font-bold">{showPass ? 'إخفاء' : 'إظهار'}</button>
-                                </div>
-                                <Button loading={loading} onClick={handleSubmit} className="w-full bg-blue-600 text-white py-3 rounded-xl font-bold hover:bg-blue-700 transition mb-3 shadow-md shadow-blue-200 dark:shadow-none">{step === 3 ? 'حفظ ودخول' : 'دخول'}</Button>
-                                <button onClick={()=>setStep(1)} className="w-full text-gray-400 hover:text-gray-600 dark:hover:text-gray-200 text-sm">رجوع</button>
-                            </div>
-                        )}
-                        
-                        <div className="mt-8 pt-4 border-t dark:border-gray-700 text-center space-y-3">
-                            {step === 2 && <p className="text-xs text-red-500 dark:text-red-400 font-bold bg-red-50 dark:bg-red-900/20 p-2 rounded">نسيت كلمة المرور؟ تواصل معنا لاستعادتها</p>}
-                            <div className="flex justify-center gap-3">
-                                <a href="https://wa.me/201113515751" target="_blank" className="flex items-center gap-2 bg-green-100 dark:bg-green-900/30 text-green-700 dark:text-green-300 px-4 py-2 rounded-full font-bold hover:bg-green-200 dark:hover:bg-green-900/50 transition shadow-sm">
-                                    <img src="https://upload.wikimedia.org/wikipedia/commons/6/6b/WhatsApp.svg" className="w-5 h-5" /> واتساب
-                                </a>
-                                <a href="https://t.me/Dr_Abdallah_Sabry" target="_blank" className="flex items-center gap-2 bg-blue-100 dark:bg-blue-900/30 text-blue-700 dark:text-blue-300 px-4 py-2 rounded-full font-bold hover:bg-blue-200 dark:hover:bg-blue-900/50 transition shadow-sm">
-                                    <img src="https://upload.wikimedia.org/wikipedia/commons/8/82/Telegram_logo.svg" className="w-5 h-5" /> تليجرام
-                                </a>
-                            </div>
-                        </div>
-                    </div>
-                </div>
-            </div>
-        );
-    };
-
-    const StudentDashboard = ({ user, onLogout, theme, toggleTheme }) => {
-        const [view, setView] = useState('home');
-        const [showScanner, setShowScanner] = useState(false);
-        const [toast, setToast] = useState(null);
-        const { confirm, config: confirmConfig, handleConfirm, handleCancel } = useConfirm();
-        const [courses, setCourses] = useState([]);
-        const [selCourse, setSelCourse] = useState('');
-        const [history, setHistory] = useState(null);
-        const [warningsList, setWarningsList] = useState([]);
-        const [loadingHistory, setLoadingHistory] = useState(false);
-        const [loadingWarnings, setLoadingWarnings] = useState(false);
-        const [showEditPass, setShowEditPass] = useState(false);
-        const [newPass, setNewPass] = useState('');
-        const [loadingPass, setLoadingPass] = useState(false);
-        
-        // إضافات جديدة لمعالجة رفع الصور من الصفحة الرئيسية
-        const [isScanningFile, setIsScanningFile] = useState(false);
-        const fileInputRef = useRef(null);
-
-        const handleFileUpload = async (e) => {
-            const file = e.target.files[0];
-            if (!file) return;
-            setIsScanningFile(true);
-            try {
-                const html5QrCode = new Html5Qrcode("file-reader-main");
-                const decodedText = await html5QrCode.scanFile(file, true);
-                handleScan(decodedText);
-            } catch (err) {
-                alert("لم يتم العثور على رمز QR في الصورة. تأكد من وضوح الصورة.");
-            } finally {
-                setIsScanningFile(false);
-                if (fileInputRef.current) fileInputRef.current.value = "";
-            }
-        };
-
-        useEffect(() => {
-            runServer('getStudentData', { nationalId: user.id }).then(res => {
-                if(res.status === 'success') setCourses(res.courses);
-            });
-            fetchWarnings();
-        }, []);
-
-        const fetchWarnings = () => {
-            setLoadingWarnings(true);
-            runServer('getStudentWarnings', { nationalId: user.id }).then(res => {
-                setLoadingWarnings(false);
-                if (res.status === 'success') setWarningsList(res.warnings);
-            });
-        };
-
-        const handleScan = (decodedText) => {
-            setShowScanner(false);
-            setToast({ type: 'info', message: 'جاري التسجيل...' });
-            runServer('scanAttendance', { nationalId: user.id, qrData: decodedText }).then(res => {
-                setToast({ type: res.status, message: res.message });
-                fetchWarnings(); // Refresh warnings after scan
-            });
-        };
-        
-        const fetchHistory = () => {
-             if(!selCourse) return;
-             setLoadingHistory(true);
-             const [uni, ...rest] = selCourse.split(" ");
-             runServer('getStudentHistory', { nationalId: user.id, uni, course: rest.join(" ") }).then(res => {
-                 setLoadingHistory(false);
-                 if(res.status === 'success') setHistory(res.data);
-             });
-        };
-
-        const handleChangePassword = async () => {
-             const ok = await confirm({ title: 'تأكيد التعديل', message: 'هل أنت متأكد من تغيير كلمة المرور؟', confirmText: 'نعم، تعديل', type: 'primary' });
-             if(ok) {
-                 setLoadingPass(true);
-                 runServer('changePassword', { nationalId: user.id, newPassword: newPass }).then(res => {
-                     setLoadingPass(false); setToast({ type: res.status, message: res.message });
-                     if(res.status==='success') setShowEditPass(false);
-                 });
-             }
-        };
-
-        return (
-            <div className="min-h-screen pb-24 bg-gray-50 dark:bg-gray-950 transition-colors">
-                {toast && <Toast {...toast} onClose={()=>setToast(null)} />}
-                <ConfirmationModal isOpen={!!confirmConfig} onClose={handleCancel} onConfirm={handleConfirm} {...confirmConfig} />
-                
-                <header className="bg-blue-700 dark:bg-blue-900 text-white p-6 rounded-b-3xl shadow-lg mb-6 transition-colors">
-                    <div className="flex justify-between items-start">
-                        <div>
-                            <h1 className="text-2xl font-bold">{user.name}</h1>
-                            <p className="text-blue-200 text-sm">طالب - {user.id}</p>
-                        </div>
-                        <div className="flex gap-2">
-                             <ThemeToggle theme={theme} toggleTheme={toggleTheme} className="bg-white/10 text-white hover:bg-white/20" />
-                            <button onClick={()=>{localStorage.removeItem('sys_user'); onLogout()}} className="bg-white/20 p-2 rounded-full hover:bg-white/30 transition">
-                                <svg className="w-5 h-5" fill="none" stroke="currentColor" viewBox="0 0 24 24"><path strokeLinecap="round" strokeLinejoin="round" strokeWidth="2" d="M17 16l4-4m0 0l-4-4m4 4H7m6 4v1a3 3 0 01-3 3H6a3 3 0 01-3-3V7a3 3 0 013-3h4a3 3 0 013 3v1"></path></svg>
-                            </button>
-                        </div>
-                    </div>
-                    <div className="mt-4 flex items-center gap-2">
-                         <span className="text-sm bg-blue-800 dark:bg-blue-950 px-2 py-1 rounded">كلمة المرور: ••••••</span>
-                         <button onClick={()=>setShowEditPass(true)} className="text-xs bg-white text-blue-700 px-2 py-1 rounded font-bold hover:bg-gray-100 transition shadow-sm">تعديل</button>
-                    </div>
-                </header>
-
-                <main className="px-4 max-w-lg mx-auto">
-                    {view === 'home' && (
-                        <div className="space-y-4 fade-in">
-                            {/* الخيار الأول: مسح الـ QR بالكاميرا المباشرة */}
-                            <div className="bg-white dark:bg-gray-800 p-6 rounded-2xl shadow-sm border border-gray-100 dark:border-gray-700 text-center">
-                                <div className="w-16 h-16 bg-blue-50 dark:bg-blue-900/20 rounded-full flex items-center justify-center mx-auto mb-4">
-                                    <svg className="w-8 h-8 text-blue-600 dark:text-blue-400" fill="none" stroke="currentColor" viewBox="0 0 24 24"><path strokeLinecap="round" strokeLinejoin="round" strokeWidth="2" d="M3 9a2 2 0 012-2h.93a2 2 0 001.664-.89l.812-1.22A2 2 0 0110.07 4h3.86a2 2 0 011.664.89l.812 1.22A2 2 0 0018.07 7H19a2 2 0 012 2v9a2 2 0 01-2 2H5a2 2 0 01-2-2V9z"></path><path strokeLinecap="round" strokeLinejoin="round" strokeWidth="2" d="M15 13a3 3 0 11-6 0 3 3 0 016 0z"></path></svg>
-                                </div>
-                                <h3 className="font-bold text-lg mb-2 text-gray-800 dark:text-gray-100">تسجيل الحضور بالكاميرا</h3>
-                                <button onClick={()=>setShowScanner(true)} className="w-full bg-blue-600 text-white py-4 rounded-xl font-bold shadow-lg shadow-blue-200 dark:shadow-none active:scale-95 transition">فتح الكاميرا المباشرة للمسح</button>
-                            </div>
-
-                            {/* الخيار الثاني: رفع صورة */}
-                            <div className="bg-white dark:bg-gray-800 p-6 rounded-2xl shadow-sm border border-gray-100 dark:border-gray-700 text-center">
-                                <input type="file" accept="image/*" capture="environment" ref={fileInputRef} style={{ display: 'none' }} onChange={handleFileUpload} />
-                                <div id="file-reader-main" style={{display: 'none'}}></div>
-                                <h3 className="font-bold text-gray-800 dark:text-gray-100 mb-2">الكاميرا لا تمسح الرمز؟</h3>
-                                <button onClick={() => fileInputRef.current && fileInputRef.current.click()} disabled={isScanningFile} className="w-full bg-indigo-600 text-white py-3 rounded-xl font-bold hover:bg-indigo-700 transition shadow-md flex justify-center items-center gap-2">
-                                    {isScanningFile ? <span className="loader-sm border-t-white"></span> : "📸 التقاط صورة للرمز من الهاتف"}
-                                </button>
-                            </div>
-
-                            {/* الخيار الثالث: الإدخال اليدوي */}
-                            <div className="bg-white dark:bg-gray-800 p-6 rounded-2xl shadow-sm border border-gray-100 dark:border-gray-700 text-center">
-                                <h3 className="font-bold text-gray-800 dark:text-gray-100 mb-3">إدخال الرقم السري يدوياً</h3>
-                                <div className="flex gap-2">
-                                    <input type="number" id="homeManualPinInput" placeholder="رقم الجلسة (6 أرقام)" className="flex-1 bg-gray-50 dark:bg-gray-900 text-gray-800 dark:text-white border border-gray-300 dark:border-gray-600 rounded-xl p-3 text-center tracking-widest font-bold outline-none focus:border-blue-500" />
-                                    <button onClick={() => {
-                                        const pin = document.getElementById('homeManualPinInput').value;
-                                        if(pin && pin.length >= 4) handleScan(pin);
-                                        else alert('يرجى إدخال الرقم بشكل صحيح');
-                                    }} className="bg-blue-600 text-white px-6 rounded-xl font-bold hover:bg-blue-700 transition">تسجيل</button>
-                                </div>
-                            </div>
-                        </div>
-                    )}
-
-                    {view === 'history' && (
-                        <div className="fade-in space-y-4">
-                             <div className="bg-white dark:bg-gray-800 p-4 rounded-xl shadow-sm border dark:border-gray-700">
-                                <label className="block text-sm font-bold mb-2 text-gray-700 dark:text-gray-300">اختر المقرر</label>
-                                <div className="flex gap-2 w-full">
-                                    <select value={selCourse} onChange={e=>setSelCourse(e.target.value)} className="flex-1 min-w-0 w-full truncate border dark:border-gray-600 bg-white dark:bg-gray-700 dark:text-white p-2 rounded-lg outline-none focus:ring-2 focus:ring-blue-400">
-                                        <option value="">...</option>
-                                        {courses.map(c=><option key={c} value={c}>{c}</option>)}
-                                    </select>
-                                    <Button loading={loadingHistory} onClick={fetchHistory} className="bg-blue-600 text-white px-6 rounded-lg font-bold">عرض</Button>
-                                </div>
-                             </div>
-                             
-                              {history && (
-                                 <div className="bg-white dark:bg-gray-800 p-4 rounded-xl shadow-sm border dark:border-gray-700">
-                                     <div className="flex justify-between mb-4 bg-gray-50 dark:bg-gray-700/50 p-3 rounded-lg border dark:border-gray-600">
-                                         <div className="text-center">
-                                             <span className="block text-xl font-bold text-green-600 dark:text-green-400">{history.presentCount}</span>
-                                             <span className="text-xs text-gray-500 dark:text-gray-400 font-bold">حضور</span>
-                                         </div>
-                                         <div className="text-center">
-                                             <span className="block text-xl font-bold text-red-600 dark:text-red-400">{history.absentCount}</span>
-                                             <span className="text-xs text-gray-500 dark:text-gray-400 font-bold">غياب</span>
-                                         </div>
-                                     </div>
-                                     <div className="space-y-2">
-                                         {history.sessions.map((s,i) => (
-                                             <div key={i} className={`flex justify-between p-3 rounded-lg border-r-4 ${s.color==='green'?'border-green-500 bg-green-50 dark:bg-green-900/10':'border-red-500 bg-red-50 dark:bg-red-900/10'}`}>
-                                                 <div>
-                                                     <p className="font-bold text-sm text-gray-800 dark:text-gray-200">{s.name}</p>
-                                                     <p className="text-[10px] text-gray-500 dark:text-gray-400">{s.time}</p>
-                                                 </div>
-                                                 <span className={`text-[10px] font-bold px-2 py-1 rounded h-fit ${s.color==='green'?'bg-green-200 text-green-800 dark:bg-green-900 dark:text-green-200':'bg-red-200 text-red-800 dark:bg-red-900 dark:text-red-200'}`}>
-                                                     {s.status}
-                                                 </span>
-                                             </div>
-                                         ))}
-                                     </div>
-                                     <button onClick={()=>window.print()} className="mt-6 w-full bg-gray-800 dark:bg-gray-700 text-white py-2 rounded-lg font-bold transition hover:bg-gray-900 shadow-md">طباعة التقرير</button>
-                                 </div>
-                             )}
-                        </div>
-                    )}
-
-                    {view === 'warnings' && (
-                        <div className="fade-in space-y-4">
-                            {loadingWarnings && <div className="text-center p-4"><span className="loader-sm border-t-blue-600"></span></div>}
-                            {!loadingWarnings && warningsList.length === 0 && (
-                                <div className="bg-white dark:bg-gray-800 p-8 rounded-2xl shadow-sm border border-gray-100 dark:border-gray-700 text-center">
-                                    <div className="w-16 h-16 bg-green-50 dark:bg-green-900/20 rounded-full flex items-center justify-center mx-auto mb-4 text-green-500">
-                                        <svg className="w-8 h-8" fill="none" stroke="currentColor" viewBox="0 0 24 24"><path strokeLinecap="round" strokeLinejoin="round" strokeWidth="2" d="M5 13l4 4L19 7"></path></svg>
-                                    </div>
-                                    <h3 className="font-bold text-lg text-gray-800 dark:text-gray-100">سجلك ممتاز</h3>
-                                    <p className="text-sm text-gray-500 dark:text-gray-400 mt-2">لا يوجد لديك أي إنذارات غياب حالياً.</p>
-                                </div>
-                            )}
-                            {warningsList.map((w, i) => (
-                                <div key={i} className={`p-6 rounded-2xl shadow-sm border ${w.type === 'warning' ? 'bg-yellow-50 border-yellow-200 dark:bg-yellow-900/20 dark:border-yellow-700/50' : 'bg-red-50 border-red-200 dark:bg-red-900/20 dark:border-red-700/50'}`}>
-                                    <div className="flex items-center gap-3 mb-3">
-                                        {w.type === 'warning' ? 
-                                            <svg className="w-8 h-8 text-yellow-500" fill="none" stroke="currentColor" viewBox="0 0 24 24"><path strokeLinecap="round" strokeLinejoin="round" strokeWidth="2" d="M12 9v2m0 4h.01m-6.938 4h13.856c1.54 0 2.502-1.667 1.732-3L13.732 4c-.77-1.333-2.694-1.333-3.464 0L3.34 16c-.77 1.333.192 3 1.732 3z"></path></svg>
-                                            :
-                                            <svg className="w-8 h-8 text-red-500" fill="none" stroke="currentColor" viewBox="0 0 24 24"><path strokeLinecap="round" strokeLinejoin="round" strokeWidth="2" d="M12 8v4m0 4h.01M21 12a9 9 0 11-18 0 9 9 0 0118 0z"></path></svg>
-                                        }
-                                        <h3 className={`font-bold text-lg ${w.type === 'warning' ? 'text-yellow-800 dark:text-yellow-400' : 'text-red-800 dark:text-red-400'}`}>
-                                            {w.type === 'warning' ? 'إنذار غياب' : 'حرمان من المقرر'}
-                                        </h3>
-                                    </div>
-                                    <p className="font-bold text-gray-800 dark:text-gray-200 mb-1">{w.course}</p>
-                                    <p className="text-sm font-bold opacity-80 mb-3 text-gray-600 dark:text-gray-400">إجمالي الغياب: {w.absentCount} جلسات</p>
-                                    <p className={`text-xs ${w.type === 'warning' ? 'text-yellow-700 dark:text-yellow-500' : 'text-red-700 dark:text-red-400'}`}>
-                                        {w.type === 'warning' 
-                                            ? 'يرجى الانتباه! غياب جلسة أخرى سيؤدي إلى حرمانك نهائياً من هذا المقرر.' 
-                                            : 'لقد تم حرمانك من هذا المقرر لتجاوز نسبة الغياب المسموح بها، ولن يقبل النظام تسجيلك في الجلسات القادمة.'}
-                                    </p>
-                                </div>
-                            ))}
-                        </div>
-                    )}
-                </main>
-                
-                <Modal isOpen={showEditPass} onClose={()=>setShowEditPass(false)} title="تغيير كلمة المرور">
-                    <p className="text-sm text-gray-500 dark:text-gray-400 mb-4">يرجى إدخال كلمة المرور الجديدة أدناه.</p>
-                    <input type="password" value={newPass} onChange={e=>setNewPass(e.target.value)} className="w-full p-3 border dark:border-gray-600 bg-white dark:bg-gray-700 dark:text-white rounded-xl mb-4 outline-none focus:ring-2 focus:ring-blue-400" placeholder="كلمة المرور الجديدة" />
-                    <Button loading={loadingPass} onClick={handleChangePassword} className="w-full bg-blue-600 text-white py-3 rounded-xl font-bold">تحديث كلمة المرور</Button>
-                </Modal>
-                
-                {showScanner && (
-                     <div className="fixed inset-0 z-[120] bg-black flex flex-col items-center justify-center p-4">
-                         <div className="text-white font-bold mb-6 bg-white/20 px-6 py-2 rounded-full backdrop-blur-sm shadow-lg">وجه الكاميرا نحو الرمز</div>
-                         
-                         <div id="reader" className="w-full max-w-sm bg-black rounded-2xl overflow-hidden shadow-2xl border-4 border-white/30 min-h-[250px] relative mb-4">
-                         </div>
-                         
-                         <ScannerController onScan={handleScan} />
-
-                         <button onClick={()=>setShowScanner(false)} className="mt-8 bg-red-600/90 text-white px-10 py-3 rounded-full font-bold shadow-lg hover:bg-red-700 transition z-[130]">إلغاء و إغلاق</button>
-                     </div>
-                )}
-
-                <nav className="fixed bottom-0 w-full bg-white dark:bg-gray-800 border-t dark:border-gray-700 flex justify-around p-2 z-50 shadow-[0_-5px_15px_rgba(0,0,0,0.05)]">
-                    <button onClick={()=>setView('home')} className={`flex flex-col items-center p-2 rounded-xl transition-colors ${view==='home'?'text-blue-600 dark:text-blue-400 bg-blue-50 dark:bg-blue-900/20':'text-gray-400'}`}>
-                        <svg className="w-6 h-6" fill="none" stroke="currentColor" viewBox="0 0 24 24"><path strokeLinecap="round" strokeLinejoin="round" strokeWidth="2" d="M3 12l2-2m0 0l7-7 7 7M5 10v10a1 1 0 001 1h3m10-11l2 2m-2-2v10a1 1 0 01-1 1h-3m-6 0a1 1 0 001-1v-4a1 1 0 011-1h2a1 1 0 011 1v4a1 1 0 001 1m-6 0h6"></path></svg>
-                        <span className="text-[10px] font-bold">الرئيسية</span>
-                    </button>
-                    <button onClick={()=>setView('history')} className={`flex flex-col items-center p-2 rounded-xl transition-colors ${view==='history'?'text-blue-600 dark:text-blue-400 bg-blue-50 dark:bg-blue-900/20':'text-gray-400'}`}>
-                        <svg className="w-6 h-6" fill="none" stroke="currentColor" viewBox="0 0 24 24"><path strokeLinecap="round" strokeLinejoin="round" strokeWidth="2" d="M9 5H7a2 2 0 00-2 2v12a2 2 0 002 2h10a2 2 0 002-2V7a2 2 0 00-2-2h-2M9 5a2 2 0 002 2h2a2 2 0 002-2M9 5a2 2 0 012-2h2a2 2 0 012 2m-3 7h3m-3 4h3m-6-4h.01M9 16h.01"></path></svg>
-                        <span className="text-[10px] font-bold">السجل</span>
-                    </button>
-                    <button onClick={()=>{setView('warnings'); fetchWarnings();}} className={`flex flex-col items-center p-2 rounded-xl transition-colors relative ${view==='warnings'?'text-blue-600 dark:text-blue-400 bg-blue-50 dark:bg-blue-900/20':'text-gray-400'}`}>
-                        {warningsList.length > 0 && <span className="absolute top-1 right-2 w-2 h-2 bg-red-500 rounded-full animate-pulse"></span>}
-                        <svg className="w-6 h-6" fill="none" stroke="currentColor" viewBox="0 0 24 24"><path strokeLinecap="round" strokeLinejoin="round" strokeWidth="2" d="M12 9v2m0 4h.01m-6.938 4h13.856c1.54 0 2.502-1.667 1.732-3L13.732 4c-.77-1.333-2.694-1.333-3.464 0L3.34 16c-.77 1.333.192 3 1.732 3z"></path></svg>
-                        <span className="text-[10px] font-bold">الإنذارات</span>
-                    </button>
-                </nav>
-            </div>
-        );
-    };
-
-    const ScannerController = ({ onScan }) => {
-        const [zoomCap, setZoomCap] = useState(null);
-        const [zoomVal, setZoomVal] = useState(1);
-        const [camError, setCamError] = useState('');
-        const trackRef = useRef(null);
-
-        useEffect(() => {
-            let scanner;
-            let isMounted = true;
-
-            const startCamera = async () => {
-                try {
-                    if (!navigator.mediaDevices || !navigator.mediaDevices.getUserMedia) {
-                        throw new Error("Camera not allowed in this context");
-                    }
-                    scanner = new Html5Qrcode("reader");
-                    await scanner.start(
-                        { facingMode: "environment" }, 
-                        { fps: 15, qrbox: { width: 250, height: 250 } }, 
-                        (txt) => { 
-                            if (isMounted) {
-                                scanner.stop().then(() => onScan(txt)).catch(e => console.log(e)); 
-                            }
-                        }, 
-                        (err) => { /* ignore empty frame errors */ }
-                    );
-
-                    setTimeout(() => {
-                        try {
-                            const videoElement = document.querySelector("#reader video");
-                            if (videoElement && videoElement.srcObject) {
-                                const track = videoElement.srcObject.getVideoTracks()[0];
-                                if (track && typeof track.getCapabilities === 'function') {
-                                    const capabilities = track.getCapabilities();
-                                    if (capabilities && capabilities.zoom) {
-                                        trackRef.current = track;
-                                        setZoomCap(capabilities.zoom);
-                                        setZoomVal(capabilities.zoom.min || 1);
-                                    }
-                                }
-                            }
-                        } catch (zoomErr) {
-                            console.warn("Zoom not supported", zoomErr);
-                        }
-                    }, 1000);
-                } catch (err) {
-                    console.warn("Camera blocked or unavailable, using fallback.", err);
-                    if (isMounted) {
-                        setCamError('الكاميرا المباشرة غير متاحة حالياً. يرجى إغلاق هذه النافذة واستخدام خيار التقاط الصورة أو الإدخال اليدوي.');
-                    }
-                }
-            };
-            setTimeout(startCamera, 500);
-
-            return () => { 
-                isMounted = false;
-                try { if(scanner && scanner.isScanning) scanner.stop(); } catch(e){} 
-            };
-        }, [onScan]);
-
-        const handleZoomChange = (e) => {
-            const val = Number(e.target.value);
-            setZoomVal(val);
-            try {
-                if (trackRef.current) {
-                    trackRef.current.applyConstraints({ advanced: [{ zoom: val }] });
-                }
-            } catch(e) {}
-        };
-
-        return (
-            <div className="w-full flex flex-col items-center px-4">
-                {camError && (
-                    <div className="bg-yellow-100 text-yellow-800 p-3 rounded-xl mt-4 text-xs font-bold text-center w-full max-w-sm">
-                        ⚠️ {camError}
-                    </div>
-                )}
-                
-                {zoomCap && !camError && (
-                    <div className="w-full max-w-sm mt-4">
-                        <div className="bg-white dark:bg-gray-800 border border-gray-200 dark:border-gray-700 p-3 rounded-xl flex items-center gap-3">
-                            <span className="text-gray-500 text-xs font-bold">🔍 -</span>
-                            <input type="range" min={zoomCap.min} max={zoomCap.max} step={zoomCap.step || 0.1} value={zoomVal} onChange={handleZoomChange} className="w-full h-2 bg-gray-200 rounded-lg appearance-none cursor-pointer accent-blue-600" />
-                            <span className="text-gray-500 text-xs font-bold">+</span>
-                        </div>
-                    </div>
-                )}
-            </div>
-        );
-    };
-
-    const AdminDashboard = ({ user, onLogout, theme, toggleTheme }) => {
-        const [view, setView] = useState('createSession');
-        const [uniData, setUniData] = useState({});
-        const [materials, setMaterials] = useState([]);
-        const [moderators, setModerators] = useState([]);
-        const [toast, setToast] = useState(null);
-        const [isSidebarOpen, setSidebarOpen] = useState(false);
-        const [showEditPass, setShowEditPass] = useState(false);
-        const [newPass, setNewPass] = useState('');
-        const [loadingPass, setLoadingPass] = useState(false);
-        const { confirm, config: confirmConfig, handleConfirm, handleCancel } = useConfirm();
-
-        const refreshData = () => {
-             runServer('adminAction', { type: 'getAdminData', role: user.role, name: user.name }).then(res => { 
-                 if(res.status==='success') {
-                     setUniData(res.data);
-                     setMaterials(res.materials);
-                     setModerators(res.moderators);
-                 } 
-             });
-        };
-
-        useEffect(() => { refreshData(); }, []);
-
-        const handlePassChange = async () => {
-             setLoadingPass(true);
-             runServer('changeModeratorPassword', { nationalId: user.id, newPassword: newPass }).then(res => {
-                 setLoadingPass(false); setToast({ type: res.status, message: res.message });
-                 if(res.status==='success') setShowEditPass(false);
-             });
-        };
-
-        const renderContent = () => {
-            const props = { uniData, materials, moderators, showToast: setToast, confirm, refresh: refreshData, user };
-            switch(view) {
-                case 'createSession': return <AdminCreateSession {...props} />;
-                case 'manageCourses': return <AdminManageCourses {...props} />;
-                case 'manageSessions': return <AdminManageSessions {...props} />;
-                case 'manageStudents': return <AdminManageStudents {...props} />;
-                case 'warningsReport': return <AdminWarningsReport {...props} />;
-                case 'reportCourse': return <AdminReportCourse {...props} />;
-                case 'isolatedReport': return <AdminIsolatedReport {...props} />;
-                case 'reportSession': return <AdminReportSession {...props} />;
-                case 'reportStudent': return <AdminReportStudent {...props} />;
-                case 'manageModerators': return <AdminManageModerators {...props} />;
-                default: return <div>تحميل...</div>;
-            }
-        };
-
-        return (
-            <div className="min-h-screen bg-gray-50 dark:bg-gray-950 flex flex-col md:flex-row transition-colors">
-                {toast && <Toast {...toast} onClose={()=>setToast(null)} />}
-                <ConfirmationModal isOpen={!!confirmConfig} onClose={handleCancel} onConfirm={handleConfirm} {...confirmConfig} />
-                
-                {/* Mobile Header */}
-                <div className="md:hidden bg-gray-900 text-white p-4 flex justify-between items-center shadow-md sticky top-0 z-30 mobile-header">
-                    <div className="flex items-center gap-3">
-                        <button onClick={() => setSidebarOpen(true)} className="p-1 rounded hover:bg-white/10">
-                             <svg className="w-8 h-8" fill="none" stroke="currentColor" viewBox="0 0 24 24"><path strokeLinecap="round" strokeLinejoin="round" strokeWidth="2" d="M4 6h16M4 12h16M4 18h16"></path></svg>
-                        </button>
-                        <span className="font-bold text-lg">لوحة الإدارة</span>
-                     </div>
-                    <ThemeToggle theme={theme} toggleTheme={toggleTheme} className="bg-white/10 text-white hover:bg-white/20" />
-                </div>
-
-                {/* Mobile Overlay */}
-                {isSidebarOpen && <div className="fixed inset-0 bg-black/60 z-40 md:hidden backdrop-blur-sm fade-in" onClick={() => setSidebarOpen(false)}></div>}
-
-                {/* Sidebar */}
-                <aside className={`bg-gray-900 text-white w-64 flex-shrink-0 h-screen fixed md:sticky top-0 right-0 z-50 transition-transform duration-300 ease-in-out shadow-2xl overflow-y-auto ${isSidebarOpen ? 'translate-x-0' : 'translate-x-full md:translate-x-0'}`}>
-                    <div className="p-6 border-b border-gray-800 flex justify-between items-center">
-                        <div>
-                            <h1 className="font-bold text-xl tracking-wide">الإدارة الذكية</h1>
-                             <p className="text-[10px] text-blue-400 font-bold mt-1">{user.name}</p>
-                        </div>
-                        <button onClick={()=>setSidebarOpen(false)} className="md:hidden text-gray-400 hover:text-white"><svg className="w-6 h-6" fill="none" stroke="currentColor" viewBox="0 0 24 24"><path strokeLinecap="round" strokeLinejoin="round" strokeWidth="2" d="M6 18L18 6M6 6l12 12"></path></svg></button>
-                    </div>
-                   
-                    <nav className="p-3 space-y-2">
-                        <div className="md:block hidden px-3 mb-2">
-                             <ThemeToggle theme={theme} toggleTheme={toggleTheme} className="w-full justify-center bg-gray-800 hover:bg-gray-700" />
-                         </div>
-                        <MenuItem label="إنشاء جلسة" icon="M12 4v16m8-8H4" active={view==='createSession'} onClick={()=>{setView('createSession'); setSidebarOpen(false);}} />
-                        <MenuItem label="إدارة الجلسات و QR" icon="M12 8v4l3 3m6-3a9 9 0 11-18 0 9 9 0 0118 0z" active={view==='manageSessions'} onClick={()=>{setView('manageSessions'); setSidebarOpen(false);}} />
-                        <MenuItem label="إدارة المقررات" icon="M19 11H5m14 0a2 2 0 012 2v6a2 2 0 01-2 2H5a2 2 0 01-2-2v-6a2 2 0 012-2m14 0V9a2 2 0 00-2-2M5 11V9a2 2 0 012-2m0 0V5a2 2 0 012-2h6a2 2 0 012 2v2M7 7h10" active={view==='manageCourses'} onClick={()=>{setView('manageCourses'); setSidebarOpen(false);}} />
-                        <MenuItem label="إدارة الطلاب" icon="M17 20h5v-2a3 3 0 00-5.356-1.857M17 20H7m10 0v-2c0-.656-.126-1.283-.356-1.857M7 20H2v-2a3 3 0 015.356-1.857M7 20v-2c0-.656.126-1.283.356-1.857m0 0a5.002 5.002 0 019.288 0M15 7a3 3 0 11-6 0 3 3 0 016 0zm6 3a2 2 0 11-4 0 2 2 0 014 0zM7 10a2 2 0 11-4 0 2 2 0 014 0z" active={view==='manageStudents'} onClick={()=>{setView('manageStudents'); setSidebarOpen(false);}} />
-                        <MenuItem label="إدارة الإنذارات" icon="M12 9v2m0 4h.01m-6.938 4h13.856c1.54 0 2.502-1.667 1.732-3L13.732 4c-.77-1.333-2.694-1.333-3.464 0L3.34 16c-.77 1.333.192 3 1.732 3z" active={view==='warningsReport'} onClick={()=>{setView('warningsReport'); setSidebarOpen(false);}} />
-
-                        <div className="pt-6 pb-2 px-3 text-[10px] text-gray-500 font-bold uppercase tracking-widest">المتابعة والتقارير</div>
-                        <MenuItem label="تقرير مقرر كامل" icon="M9 17v-2m3 2v-4m3 4v-6m2 10H7a2 2 0 01-2-2V5a2 2 0 012-2h5.586a1 1 0 01.707.293l5.414 5.414a1 1 0 01.293.707V19a2 2 0 01-2 2z" active={view==='reportCourse'} onClick={()=>{setView('reportCourse'); setSidebarOpen(false);}} />
-                        <MenuItem label="تقرير منفصل" icon="M9 12h6m-6 4h6m2 5H7a2 2 0 01-2-2V5a2 2 0 012-2h5.586a1 1 0 01.707.293l5.414 5.414a1 1 0 01.293.707V19a2 2 0 01-2 2z" active={view==='isolatedReport'} onClick={()=>{setView('isolatedReport'); setSidebarOpen(false);}} />
-                        <MenuItem label="تقرير جلسة" icon="M9 5H7a2 2 0 00-2 2v12a2 2 0 002 2h10a2 2 0 002-2V7a2 2 0 00-2-2h-2M9 5a2 2 0 002 2h2a2 2 0 002-2M9 5a2 2 0 012-2h2a2 2 0 012 2" active={view==='reportSession'} onClick={()=>{setView('reportSession'); setSidebarOpen(false);}} />
-                        <MenuItem label="بحث عن طالب" icon="M21 21l-6-6m2-5a7 7 0 11-14 0 7 7 0 0114 0z" active={view==='reportStudent'} onClick={()=>{setView('reportStudent'); setSidebarOpen(false);}} />
-
-                        {user.role === 'admin' && (
-                            <>
-                                <div className="pt-6 pb-2 px-3 text-[10px] text-orange-500 font-bold uppercase tracking-widest">صلاحيات المدير</div>
-                                <MenuItem label="إدارة المديرين" icon="M10 6H6a2 2 0 00-2 2v10a2 2 0 002 2h10a2 2 0 002-2v-4M14 4h6m0 0v6m0-6L10 14" active={view==='manageModerators'} onClick={()=>{setView('manageModerators'); setSidebarOpen(false);}} />
-                            </>
-                        )}
-                    </nav>
-                    <div className="p-4 mt-auto border-t border-gray-800 space-y-2">
-                        {user.role === 'moderator' && <button onClick={()=>setShowEditPass(true)} className="w-full text-xs text-blue-400 py-2 hover:bg-gray-800 rounded">تغيير كلمة المرور</button>}
-                        <button onClick={async ()=>{ const ok = await confirm({title:'تنبيه', message:'تسجيل الخروج؟', confirmText:'خروج'}); if(ok) { localStorage.removeItem('sys_user'); onLogout() }}} className="w-full bg-red-600/20 text-red-400 hover:bg-red-600 hover:text-white py-2.5 rounded-xl font-bold text-sm transition-all duration-300">تسجيل خروج</button>
-                    </div>
-                </aside>
-
-                <main className="flex-1 p-4 md:p-8 overflow-x-hidden w-full">
-                    <div className="max-w-6xl mx-auto">
-                        {renderContent()}
-                    </div>
-                </main>
-
-                <Modal isOpen={showEditPass} onClose={()=>setShowEditPass(false)} title="تغيير كلمة المرور الخاصة بك">
-                    <input type="password" value={newPass} onChange={e=>setNewPass(e.target.value)} className="w-full p-3 border dark:border-gray-600 bg-white dark:bg-gray-700 dark:text-white rounded-xl mb-4 outline-none focus:ring-2 focus:ring-blue-400" placeholder="كلمة المرور الجديدة" />
-                    <Button loading={loadingPass} onClick={handlePassChange} className="w-full bg-blue-600 text-white py-3 rounded-xl font-bold">حفظ التغييرات</Button>
-                </Modal>
-            </div>
-        );
-    };
-
-    const MenuItem = ({ label, icon, active, onClick }) => (
-        <button onClick={onClick} className={`w-full flex items-center gap-3 px-4 py-3 rounded-xl transition-all duration-300 ${active ? 'bg-blue-600 text-white shadow-lg shadow-blue-900/40' : 'text-gray-400 hover:bg-gray-800 hover:text-white'}`}>
-            <svg className="w-5 h-5" fill="none" stroke="currentColor" viewBox="0 0 24 24"><path strokeLinecap="round" strokeLinejoin="round" strokeWidth="2" d={icon}></path></svg>
-            <span className="font-bold text-sm">{label}</span>
-        </button>
-    );
-
-    // --- Admin Feature Sub-Components ---
-
-    const AdminCreateSession = ({ uniData, showToast, user }) => {
-        const [uni, setUni] = useState('حكومي');
-        const [course, setCourse] = useState('');
-        const [duration, setDuration] = useState(30);
-        const [lastSession, setLastSession] = useState('-');
-        const [qrData, setQrData] = useState(null);
-        const [loadingInfo, setLoadingInfo] = useState(false);
-        const [creating, setCreating] = useState(false);
-
-        useEffect(() => {
-            if(course) {
-                setLoadingInfo(true);
-                runServer('adminAction', { type: 'getLastSession', uni, course, name: user.name }).then(res => {
-                   setLoadingInfo(false);
-                   if(res.status==='success') setLastSession(res.lastSession);
-                });
-            }
-        }, [course, uni, user.name]);
-
-        const handleCreate = async () => {
-             if(!course) return;
-             setCreating(true);
-             const res = await runServer('adminAction', { type: 'createSession', uni, course, duration, creatorName: user.name });
-             setCreating(false);
-             if(res.status === 'success') {
-                 setQrData({ ...res, uni, course });
-                 showToast({ type: 'success', message: 'تم إنشاء الجلسة بنجاح' });
-             }
-        };
-
-        return (
-            <div className="bg-white dark:bg-gray-800 p-6 md:p-8 rounded-3xl shadow-sm border border-gray-100 dark:border-gray-700 max-w-2xl mx-auto fade-in">
-                <h2 className="text-2xl font-bold mb-8 text-gray-800 dark:text-gray-100 flex items-center gap-3">
-                    <span className="bg-blue-600 w-2 h-8 rounded-full"></span>
-                    إنشاء جلسة جديدة
-                </h2>
-                <div className="grid grid-cols-1 md:grid-cols-2 gap-6 mb-6">
-                    <div>
-                        <label className="block font-bold text-sm mb-2 text-gray-700 dark:text-gray-300">الجامعة</label>
-                        <select className="w-full flex-1 min-w-0 truncate border-2 border-gray-100 dark:border-gray-600 dark:bg-gray-700 dark:text-white p-3 rounded-2xl outline-none focus:border-blue-500 transition" value={uni} onChange={e=>{setUni(e.target.value); setCourse('');}}>
-                            <option value="حكومي">جامعة حكومية</option>
-                            <option value="أهلية">جامعة أهلية</option>
-                        </select>
-                    </div>
-                    <div>
-                         <label className="block font-bold text-sm mb-2 text-gray-700 dark:text-gray-300 flex justify-between">
-                            المقرر 
-                            {loadingInfo && <span className="loader-sm"></span>}
-                            <span className="text-[10px] text-blue-500 font-bold">({lastSession})</span>
-                         </label>
-                         <select className="w-full flex-1 min-w-0 truncate border-2 border-gray-100 dark:border-gray-600 dark:bg-gray-700 dark:text-white p-3 rounded-2xl outline-none focus:border-blue-500 transition" value={course} onChange={e=>setCourse(e.target.value)}>
-                            <option value="">اختر المقرر...</option>
-                            {(uniData[uni]||[]).map(c=><option key={c} value={c}>{c}</option>)}
-                         </select>
-                    </div>
-                </div>
-                <div className="mb-8">
-                    <label className="block font-bold text-sm mb-2 text-gray-700 dark:text-gray-300">مدة تسجيل الحضور (بالدقائق)</label>
-                    <input type="number" className="w-full border-2 border-gray-100 dark:border-gray-600 dark:bg-gray-700 dark:text-white p-3 rounded-2xl outline-none focus:border-blue-500 transition" value={duration} onChange={e=>setDuration(e.target.value)} />
-                </div>
-                
-                {!qrData ? (
-                    <Button loading={creating} onClick={handleCreate} className="w-full bg-blue-600 text-white py-4 rounded-2xl font-bold hover:bg-blue-700 shadow-lg shadow-blue-200 dark:shadow-none">إنشاء الجلسة وتوليد الرمز</Button>
-                ) : (
-                    <div className="bg-blue-50 dark:bg-blue-900/20 p-6 rounded-3xl text-center fade-in">
-                        <div className="bg-green-100 dark:bg-green-900 text-green-700 dark:text-green-300 py-1 px-4 rounded-full text-xs font-bold inline-block mb-4">تم الإنشاء بنجاح</div>
-                        <h3 className="text-xl font-bold text-blue-900 dark:text-blue-100 mb-4">{qrData.sessionName}</h3>
-                        
-                        <div className="flex justify-center mb-4">
-                             <div className="bg-white p-4 rounded-2xl shadow-sm border-2 border-blue-100">
-                                <img src={`https://api.qrserver.com/v1/create-qr-code/?size=250x250&data=${encodeURIComponent(qrData.qrData)}`} className="w-48 h-48" alt="QR" />
-                             </div>
-                        </div>
-                        
-                        <div className="bg-white dark:bg-gray-800 p-3 rounded-xl inline-block mb-6 border-2 border-dashed border-blue-300 dark:border-blue-700">
-                            <p className="text-xs text-gray-500 dark:text-gray-400 mb-1 font-bold">رقم تسجيل الحضور (للطالب الذي لا تعمل كاميرته):</p>
-                            <p className="text-3xl font-bold tracking-[0.3em] text-blue-600 dark:text-blue-400">{qrData.pinCode || qrData.qrData.split('|separator|').pop()}</p>
-                        </div>
-
-                        <p className="text-xs text-gray-500 dark:text-gray-400 mb-6">هذا الرمز صالح لمدة {duration} دقيقة من الآن.</p>
-                        <div className="flex gap-3 justify-center">
-                            <button onClick={()=>window.open(`https://api.qrserver.com/v1/create-qr-code/?size=800x800&data=${encodeURIComponent(qrData.qrData)}`, '_blank')} className="bg-blue-600 text-white px-6 py-2.5 rounded-xl font-bold text-sm shadow-md transition hover:bg-blue-700">عرض بملء الشاشة</button>
-                            <button onClick={()=>setQrData(null)} className="bg-white dark:bg-gray-700 text-gray-600 dark:text-gray-200 border border-gray-200 dark:border-gray-600 px-6 py-2.5 rounded-xl font-bold text-sm shadow-sm transition hover:bg-gray-50 dark:hover:bg-gray-600">إغلاق</button>
-                        </div>
-                    </div>
-                )}
-            </div>
-        );
-    };
-
-    const AdminManageCourses = ({ uniData, materials, refresh, showToast, confirm, user }) => {
-        const [newCourse, setNewCourse] = useState('');
-        const [uni, setUni] = useState('حكومي');
-        const [loadingAdd, setLoadingAdd] = useState(false);
-
-        const handleAdd = async () => {
-             if(!newCourse) return;
-             setLoadingAdd(true);
-             const res = await runServer('adminAction', { type: 'addCourse', uni, courseName: newCourse, name: user.name });
-             setLoadingAdd(false);
-             if(res.status === 'success') { showToast({type:'success', message:'تم إضافة المقرر بنجاح'}); setNewCourse(''); refresh(); }
-             else showToast({type:'error', message: res.message});
-        };
-
-        const handleDelete = async (courseName) => {
-             const ok = await confirm({ title:'حذف مقرر', message: `هل تريد حذف ${courseName}؟ ${user.role === 'admin' ? '(سيتم الحذف نهائياً للجميع)' : '(سيتم حذفه من حسابك فقط)'}` });
-             if(ok) {
-                 const res = await runServer('adminAction', { type: 'deleteCourse', uni, courseName, role: user.role, name: user.name });
-                 if(res.status==='success') { showToast({type:'success', message:'تم الحذف بنجاح'}); refresh(); }
-             }
-        };
-
-        return (
-            <div className="bg-white dark:bg-gray-800 p-6 md:p-8 rounded-3xl shadow-sm border border-gray-100 dark:border-gray-700 max-w-3xl mx-auto fade-in">
-                 <h2 className="text-2xl font-bold mb-8 text-gray-800 dark:text-gray-100">إدارة المقررات الدراسية</h2>
-                 <div className="flex flex-col sm:flex-row gap-3 mb-8 w-full">
-                     <select className="border-2 border-gray-100 dark:border-gray-600 dark:bg-gray-700 dark:text-white p-3 rounded-2xl outline-none w-full sm:w-auto" value={uni} onChange={e=>setUni(e.target.value)}><option value="حكومي">حكومي</option><option value="أهلية">أهلية</option></select>
-                     <input type="text" list="materials-list" className="border-2 border-gray-100 dark:border-gray-600 dark:bg-gray-700 dark:text-white p-3 rounded-2xl flex-1 min-w-0 w-full outline-none focus:border-blue-400 transition" placeholder="اسم المقرر الجديد" value={newCourse} onChange={e=>setNewCourse(e.target.value)} />
-                     <datalist id="materials-list">
-                        {materials.map(m=><option key={m} value={m} />)}
-                     </datalist>
-                     <Button loading={loadingAdd} onClick={handleAdd} className="bg-green-600 text-white px-8 rounded-2xl font-bold w-full sm:w-auto">إضافة</Button>
-                 </div>
-                 <div className="space-y-3">
-                     {(uniData[uni]||[]).length === 0 && <p className="text-center text-gray-400 py-10">لا يوجد مقررات مسجلة لهذه الجامعة.</p>}
-                     {(uniData[uni]||[]).map(c => (
-                         <div key={c} className="group flex justify-between items-center p-4 bg-gray-50 dark:bg-gray-700/30 rounded-2xl border border-transparent hover:border-gray-200 dark:hover:border-gray-600 transition">
-                             <div>
-                                <span className="font-bold text-gray-700 dark:text-gray-200">{c}</span>
-                                <p className="text-[10px] text-gray-400 mt-1 uppercase">COURSE ID: {Math.random().toString(36).substr(2, 5)}</p>
-                             </div>
-                             <button onClick={()=>handleDelete(c)} className="opacity-0 group-hover:opacity-100 text-red-400 hover:text-red-600 transition p-2 bg-white dark:bg-gray-700 rounded-xl shadow-sm">
-                                <svg className="w-5 h-5" fill="none" stroke="currentColor" viewBox="0 0 24 24"><path strokeLinecap="round" strokeLinejoin="round" strokeWidth="2" d="M19 7l-.867 12.142A2 2 0 0116.138 21H7.862a2 2 0 01-1.995-1.858L5 7m5 4v6m4-6v6m1-10V4a1 1 0 00-1-1h-4a1 1 0 00-1 1v3M4 7h16"></path></svg>
-                             </button>
-                         </div>
-                     ))}
-                 </div>
-            </div>
-        );
-    };
-
+    // --- مكون إدارة الطلاب المُحدث ليشمل رفع الإكسيل ---
     const AdminManageStudents = ({ uniData, showToast, confirm }) => {
         const [uni, setUni] = useState('حكومي');
         const [course, setCourse] = useState('');
         const [students, setStudents] = useState([]);
         const [loading, setLoading] = useState(false);
         const [showModal, setShowModal] = useState(false);
+        const [showBulkModal, setShowBulkModal] = useState(false); // إضافة نافذة الرفع الجماعي
+        const [bulkText, setBulkText] = useState(''); // نص الإكسيل المنسوخ
         const [editMode, setEditMode] = useState(false);
         const [studentForm, setStudentForm] = useState({ name: '', id: '', rowIndex: null });
 
@@ -1412,14 +601,11 @@
                 runServer('adminAction', { type: 'getCourseStudents', uni, course }).then(res => {
                     setLoading(false);
                     if (res.status === 'success') {
-                        // الترتيب الأبجدي التلقائي
                         const sorted = res.students.sort((a, b) => a.name.localeCompare(b.name, 'ar'));
                         setStudents(sorted);
                     }
                 });
-            } else {
-                setStudents([]);
-            }
+            } else { setStudents([]); }
         }, [uni, course]);
 
         useEffect(load, [course, load]);
@@ -1431,8 +617,32 @@
             setLoading(false);
             if (res.status === 'success') {
                 showToast({ type: 'success', message: editMode ? 'تم التعديل' : 'تمت الإضافة بنجاح' });
-                setShowModal(false);
-                load();
+                setShowModal(false); load();
+            }
+        };
+
+        const handleBulkSubmit = async () => {
+            if(!bulkText.trim()) return;
+            setLoading(true);
+            // فصل السطور ومعالجتها (يقبل النسخ من إكسيل حيث يفصل بين الاسم والرقم بـ Tab أو فاصلة)
+            const lines = bulkText.split('\n');
+            const bulkStudents = lines.map(l => {
+                const parts = l.split(/\t|,|-/);
+                if(parts.length >= 2) return { name: parts[0].trim(), id: parts[1].trim() };
+                return null;
+            }).filter(Boolean);
+
+            if(bulkStudents.length === 0) {
+                setLoading(false);
+                showToast({type: 'error', message: 'لم يتم التعرف على الصيغة. انسخ (الاسم) وبجانبه (الرقم القومي)'});
+                return;
+            }
+
+            const res = await runServer('adminAction', { type: 'manageStudent', uni, course, actionType: 'bulkAdd', bulkStudents });
+            setLoading(false);
+            if (res.status === 'success') {
+                showToast({ type: 'success', message: `تمت إضافة ${bulkStudents.length} طالب بنجاح` });
+                setShowBulkModal(false); setBulkText(''); load();
             }
         };
 
@@ -1440,10 +650,7 @@
             const ok = await confirm({ title: 'تأكيد الحذف', message: `حذف الطالب ${stu.name} من المقرر نهائياً؟` });
             if (ok) {
                 const res = await runServer('adminAction', { type: 'manageStudent', uni, course, actionType: 'delete', studentData: stu });
-                if (res.status === 'success') {
-                    showToast({ type: 'success', message: 'تم الحذف' });
-                    load();
-                }
+                if (res.status === 'success') { showToast({ type: 'success', message: 'تم الحذف' }); load(); }
             }
         };
 
@@ -1453,15 +660,7 @@
             return digit % 2 === 0 ? 'أنثى' : 'ذكر';
         };
 
-        const getStats = () => {
-            let male = 0, female = 0;
-            students.forEach(s => {
-                if (getGender(s.id) === 'ذكر') male++;
-                else if (getGender(s.id) === 'أنثى') female++;
-            });
-            return { total: students.length, male, female };
-        };
-        const stats = getStats();
+        const stats = { total: students.length, male: students.filter(s=>getGender(s.id)==='ذكر').length, female: students.filter(s=>getGender(s.id)==='أنثى').length };
 
         return (
             <div className="bg-white dark:bg-gray-800 p-6 rounded-3xl shadow-sm border border-gray-100 dark:border-gray-700 fade-in w-full">
@@ -1476,9 +675,10 @@
                         </select>
                     </div>
                     {course && (
-                        <div className="flex gap-2">
-                            <Button onClick={() => { setEditMode(false); setStudentForm({ name: '', id: '' }); setShowModal(true); }} className="bg-green-600 text-white px-6 rounded-2xl font-bold">إضافة طالب</Button>
-                            <button onClick={() => window.print()} className="bg-gray-800 text-white px-6 rounded-2xl font-bold">طباعة</button>
+                        <div className="flex flex-wrap gap-2">
+                            <Button onClick={() => { setEditMode(false); setStudentForm({ name: '', id: '' }); setShowModal(true); }} className="bg-green-600 text-white px-4 rounded-2xl font-bold">إضافة طالب</Button>
+                            <Button onClick={() => setShowBulkModal(true)} className="bg-indigo-600 text-white px-4 rounded-2xl font-bold">إضافة من الإكسيل</Button>
+                            <button onClick={() => window.print()} className="bg-gray-800 text-white px-4 rounded-2xl font-bold">طباعة</button>
                         </div>
                     )}
                 </div>
@@ -1529,10 +729,16 @@
                     </div>
                 )}
 
-                <Modal isOpen={showModal} onClose={() => setShowModal(false)} title={editMode ? "تعديل بيانات الطالب" : "إضافة طالب جديد"}>
+                <Modal isOpen={showModal} onClose={() => setShowModal(false)} title={editMode ? "تعديل بيانات الطالب" : "إضافة طالب فردي"}>
                     <input type="text" placeholder="اسم الطالب (رباعي)" value={studentForm.name} onChange={e => setStudentForm({ ...studentForm, name: e.target.value })} className="w-full p-3 border dark:border-gray-600 bg-white dark:bg-gray-700 dark:text-white rounded-xl mb-4 outline-none focus:ring-2 focus:ring-blue-400" />
                     <input type="number" placeholder="الرقم القومي (14 رقم)" value={studentForm.id} onChange={e => setStudentForm({ ...studentForm, id: e.target.value })} className="w-full p-3 border dark:border-gray-600 bg-white dark:bg-gray-700 dark:text-white rounded-xl mb-4 outline-none focus:ring-2 focus:ring-blue-400" />
                     <Button loading={loading} onClick={handleSubmit} className="w-full bg-blue-600 text-white py-3 rounded-xl font-bold">{editMode ? 'حفظ التعديلات' : 'إضافة للقائمة'}</Button>
+                </Modal>
+
+                <Modal isOpen={showBulkModal} onClose={() => setShowBulkModal(false)} title="إضافة طلاب دفعة واحدة من الإكسيل">
+                    <p className="text-sm text-gray-500 mb-2">انسخ عمود (الاسم) وعمود (الرقم القومي) من ملف الإكسيل والصقهما هنا معاً:</p>
+                    <textarea value={bulkText} onChange={e => setBulkText(e.target.value)} placeholder="مثال:&#10;أحمد محمد علي    299102...&#10;سارة محمود حسن    300123..." className="w-full h-48 p-3 border dark:border-gray-600 bg-white dark:bg-gray-700 dark:text-white rounded-xl mb-4 outline-none focus:ring-2 focus:ring-blue-400 whitespace-pre" />
+                    <Button loading={loading} onClick={handleBulkSubmit} className="w-full bg-indigo-600 text-white py-3 rounded-xl font-bold">بدء التسجيل الجماعي</Button>
                 </Modal>
             </div>
         );
