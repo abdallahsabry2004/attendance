@@ -22,12 +22,14 @@
         }
       }
     }
-  </script>
+</script>
   <script src="https://unpkg.com/react@18/umd/react.production.min.js" crossorigin></script>
   <script src="https://unpkg.com/react-dom@18/umd/react-dom.production.min.js" crossorigin></script>
-  <script src="https://cdn.jsdelivr.net/npm/@supabase/supabase-js@2"></script>
   <script src="https://unpkg.com/@babel/standalone/babel.min.js"></script>
   <script src="https://unpkg.com/html5-qrcode" type="text/javascript"></script>
+  
+  <script src="https://cdn.jsdelivr.net/npm/@supabase/supabase-js@2"></script>
+  
   <link href="https://fonts.googleapis.com/css2?family=Cairo:wght@300;400;600;700;800&display=swap" rel="stylesheet">
   
   <style>
@@ -58,73 +60,57 @@
 <body class="bg-gray-50 text-gray-800 dark:bg-gray-900 dark:text-gray-100 transition-colors duration-300">
   <div id="root"></div>
 
-  // ضع المفاتيح التي نسختها من Supabase هنا
-const SUPABASE_URL = "https://peuzohchnkpcesoatjdz.supabase.co";
-const SUPABASE_ANON_KEY = "eyJhbGciOiJIUzI1NiIsInR5cCI6IkpXVCJ9.eyJpc3MiOiJzdXBhYmFzZSIsInJlZiI6InBldXpvaGNobmtwY2Vzb2F0amR6Iiwicm9sZSI6ImFub24iLCJpYXQiOjE3NzIxMDM2MDYsImV4cCI6MjA4NzY3OTYwNn0.TFkjH9bRs5Rxa6gYvBlFpRXmAU28rri-RzeXH59gxQI";
+  <script type="text/babel">
+    const { useState, useEffect, useRef, useCallback } = React;
+    
+    // --- إعدادات Supabase ---
+    // لا تنسَ استبدال هذه القيم بمفاتيح مشروعك الحقيقية
+    const SUPABASE_URL = "https://peuzohchnkpcesoatjdz.supabase.co";
+    const SUPABASE_ANON_KEY = "eyJhbGciOiJIUzI1NiIsInR5cCI6IkpXVCJ9.eyJpc3MiOiJzdXBhYmFzZSIsInJlZiI6InBldXpvaGNobmtwY2Vzb2F0amR6Iiwicm9sZSI6ImFub24iLCJpYXQiOjE3NzIxMDM2MDYsImV4cCI6MjA4NzY3OTYwNn0.TFkjH9bRs5Rxa6gYvBlFpRXmAU28rri-RzeXH59gxQI";
+    const supabase = window.supabase.createClient(SUPABASE_URL, SUPABASE_ANON_KEY);
 
-// تهيئة الاتصال السريع بقاعدة البيانات
-const supabase = window.supabase.createClient(SUPABASE_URL, SUPABASE_ANON_KEY);
-
-// دالة الاتصال الجديدة (صاروخية وآمنة 100%)
-const runServer = async (action, payload = {}) => {
-  try {
-    switch (action) {
-      
-      // 1. نظام تسجيل الدخول
-      case 'login': {
-        const { data, error } = await supabase
-          .from('users_data')
-          .select('*')
-          .eq('national_id', payload.nationalId)
-          .maybeSingle(); // نبحث عن المستخدم بالرقم القومي
-          
-        if (error || !data) return { status: 'error', message: 'الرقم القومي غير مسجل' };
-        if (data.password !== payload.password) return { status: 'error', message: 'كلمة المرور غير صحيحة' };
-        
-        return { status: 'success', role: data.role, name: data.full_name };
-      }
-
-      // 2. تسجيل الحضور (باستخدام الدالة المحصنة التي أنشأناها)
-      case 'scanAttendance': {
-        // نرسل الطلب للدالة المحمية داخل قاعدة البيانات مباشرة
-        const { data, error } = await supabase.rpc('scan_attendance_secure', {
-          p_national_id: payload.nationalId,
-          p_qr_code: payload.qrData
-        });
-        
-        if (error) {
-            console.error(error);
-            return { status: 'error', message: 'حدث خطأ في قراءة الرمز' };
+    // --- دالة الاتصال الجديدة (runServer) ---
+    const runServer = async (action, payload = {}) => {
+      try {
+        switch (action) {
+          case 'login': {
+            const { data, error } = await supabase
+              .from('users_data')
+              .select('*')
+              .eq('national_id', payload.nationalId)
+              .maybeSingle(); 
+              
+            if (error || !data) return { status: 'error', message: 'الرقم القومي غير مسجل' };
+            if (data.password !== payload.password) return { status: 'error', message: 'كلمة المرور غير صحيحة' };
+            
+            return { status: 'success', role: data.role, name: data.full_name };
+          }
+          case 'scanAttendance': {
+            const { data, error } = await supabase.rpc('scan_attendance_secure', {
+              p_national_id: payload.nationalId,
+              p_qr_code: payload.qrData
+            });
+            if (error) { console.error(error); return { status: 'error', message: 'حدث خطأ في قراءة الرمز' }; }
+            return data; 
+          }
+          case 'getStudentData': {
+            const { data, error } = await supabase
+              .from('users_data')
+              .select('id, course_enrollments(courses(course_name))')
+              .eq('national_id', payload.nationalId)
+              .single();
+            if (error || !data) return { status: 'error', message: 'خطأ في جلب المقررات' };
+            const courses = data.course_enrollments.map(e => e.courses.course_name);
+            return { status: 'success', courses: courses };
+          }
+          default:
+            return { status: 'error', message: 'الإجراء غير مدعوم حالياً في النسخة الجديدة' };
         }
-        return data; // هذه سترجع رسالة النجاح أو الفشل من الدالة المبرمجة
+      } catch (err) {
+        console.error('Supabase Error:', err);
+        return { status: 'error', message: 'تعذر الاتصال بالخادم السحابي.' };
       }
-
-      // 3. جلب بيانات الطالب (المقررات التي سجل بها)
-      case 'getStudentData': {
-        // نستعلم عن المقررات المرتبطة بهذا الطالب بضغطة واحدة بفضل العلاقات (Joins)
-        const { data, error } = await supabase
-          .from('users_data')
-          .select('id, course_enrollments(courses(course_name))')
-          .eq('national_id', payload.nationalId)
-          .single();
-          
-        if (error || !data) return { status: 'error', message: 'خطأ في جلب المقررات' };
-        
-        // ترتيب البيانات لتناسب تصميمك الحالي
-        const courses = data.course_enrollments.map(e => e.courses.course_name);
-        return { status: 'success', courses: courses };
-      }
-
-      // يمكنك إضافة باقي الإجراءات (Admin Actions) بنفس الطريقة هنا...
-      
-      default:
-        return { status: 'error', message: 'الإجراء غير مدعوم حالياً في النسخة الجديدة' };
-    }
-  } catch (err) {
-    console.error('Supabase Error:', err);
-    return { status: 'error', message: 'تعذر الاتصال بالخادم السحابي.' };
-  }
-};
+    };
 
     // --- Hooks ---
     const useTheme = () => {
