@@ -361,7 +361,158 @@
               
               return { status: 'error', message: 'تم إيقاف هذا الإجراء مؤقتاً للتحديث' };
           }
+// ==========================================
+          // 5. التقارير وإدارة الغياب يدوياً (Reports & Attendance)
+          // ==========================================
 
+          case 'getCourseReport': {
+            const { uni, course } = payload;
+            const { data: cData } = await supabase.from('courses').select('id').eq('university', uni).eq('course_name', course).single();
+            if (!cData) return { status: 'error', message: 'المقرر غير موجود' };
+
+            const { data: sessions } = await supabase.from('sessions').select('id, session_name').eq('course_id', cData.id).order('created_at', { ascending: true });
+            const { data: enrollments } = await supabase.from('course_enrollments').select('users_data(id, full_name, national_id)').eq('course_id', cData.id);
+            const { data: attendance } = await supabase.from('attendance_logs').select('student_id, session_id, scanned_at').in('session_id', (sessions||[]).map(s=>s.id));
+
+            const headers = ["اسم الطالب", "حضور", "غياب", "الرقم القومي", ...(sessions||[]).map(s => s.session_name)];
+            
+            const rows = (enrollments || []).map(e => {
+                const stu = e.users_data;
+                let present = 0; let absent = 0;
+                const sessionStatuses = (sessions||[]).map(s => {
+                    const rec = (attendance||[]).find(a => a.student_id === stu.id && a.session_id === s.id);
+                    if (rec) { present++; return new Date(rec.scanned_at).toLocaleString('ar-EG', { timeZone: 'Africa/Cairo' }); }
+                    else { absent++; return ""; }
+                });
+                return [stu.full_name, present, absent, stu.national_id, ...sessionStatuses];
+            }).sort((a,b) => String(a[0]).localeCompare(String(b[0]), 'ar'));
+
+            return { status: 'success', headers, rows, count: rows.length };
+          }
+
+          case 'getIsolatedCourseReport': {
+            const { uni, course, targetModerator } = payload;
+            const { data: modData } = await supabase.from('users_data').select('id').eq('full_name', targetModerator).limit(1).single();
+            const modId = modData ? modData.id : null;
+
+            const { data: cData } = await supabase.from('courses').select('id').eq('university', uni).eq('course_name', course).single();
+            if (!cData) return { status: 'error' };
+
+            const { data: sessions } = await supabase.from('sessions').select('id, session_name').eq('course_id', cData.id).order('created_at', { ascending: true });
+            const { data: enrollments } = await supabase.from('course_enrollments').select('users_data(id, full_name, national_id)').eq('course_id', cData.id);
+            
+            // جلب الحضور الذي سجله هذا المدير فقط
+            let attQuery = supabase.from('attendance_logs').select('student_id, session_id, scanned_at').in('session_id', (sessions||[]).map(s=>s.id));
+            if (modId) attQuery = attQuery.eq('scanned_by', modId);
+            const { data: attendance } = await attQuery;
+
+            const sessionIdsWithModAtt = [...new Set((attendance||[]).map(a=>a.session_id))];
+            const filteredSessions = (sessions||[]).filter(s => sessionIdsWithModAtt.includes(s.id));
+            const headers = ["اسم الطالب", "حضور", "غياب", "الرقم القومي", ...filteredSessions.map(s => s.session_name)];
+
+            const rows = (enrollments || []).map(e => {
+                const stu = e.users_data;
+                let present = 0; let absent = 0;
+                const sessionStatuses = filteredSessions.map(s => {
+                    const rec = (attendance||[]).find(a => a.student_id === stu.id && a.session_id === s.id);
+                    if (rec) { present++; return new Date(rec.scanned_at).toLocaleString('ar-EG', { timeZone: 'Africa/Cairo' }); }
+                    else { absent++; return ""; }
+                });
+                return [stu.full_name, present, absent, stu.national_id, ...sessionStatuses];
+            }).sort((a,b) => String(a[0]).localeCompare(String(b[0]), 'ar'));
+
+            return { status: 'success', headers, rows, count: rows.length };
+          }
+
+          case 'getSessionReport': {
+            const { uni, course, session } = payload;
+            const { data: cData } = await supabase.from('courses').select('id').eq('university', uni).eq('course_name', course).single();
+            if(!cData) return { status: 'error' };
+
+            const { data: sData } = await supabase.from('sessions').select('id').eq('course_id', cData.id).eq('session_name', session).single();
+            if(!sData) return { status: 'error' };
+
+            const { data: enrollments } = await supabase.from('course_enrollments').select('users_data(id, full_name, national_id)').eq('course_id', cData.id);
+            const { data: attendance } = await supabase.from('attendance_logs').select('student_id, scanned_at').eq('session_id', sData.id);
+
+            const report = (enrollments || []).map(e => {
+                const stu = e.users_data;
+                const rec = (attendance||[]).find(a => a.student_id === stu.id);
+                const isPresent = !!rec;
+                return {
+                    name: stu.full_name,
+                    id: stu.national_id,
+                    status: isPresent ? 'حضور' : 'غياب',
+                    time: isPresent ? new Date(rec.scanned_at).toLocaleString('ar-EG', { timeZone: 'Africa/Cairo' }) : '-',
+                    color: isPresent ? 'green' : 'red',
+                    rowIndex: stu.id, // تم تخزين الـ UUID الخاص بالطالب هنا لتسهيل تعديل حالته
+                    rawVal: isPresent ? 'present' : ''
+                };
+            }).sort((a,b) => a.name.localeCompare(b.name, 'ar'));
+
+            return { status: 'success', report };
+          }
+
+          case 'getStudentSearchReport': {
+            const { uni, course, query } = payload;
+            const { data: cData } = await supabase.from('courses').select('id').eq('university', uni).eq('course_name', course).single();
+            if(!cData) return { status: 'error' };
+
+            // البحث الذكي عن طريق الاسم أو الرقم القومي
+            const { data: enrollments } = await supabase.from('course_enrollments')
+                  .select('users_data!inner(id, full_name, national_id)')
+                  .eq('course_id', cData.id)
+                  .or(`full_name.ilike.%${query}%,national_id.ilike.%${query}%`, { foreignTable: 'users_data' });
+            
+            const { data: sessions } = await supabase.from('sessions').select('id, session_name').eq('course_id', cData.id).order('created_at', { ascending: true });
+            const studentIds = (enrollments||[]).map(e => e.users_data.id);
+            const { data: attendance } = await supabase.from('attendance_logs').select('student_id, session_id').in('session_id', (sessions||[]).map(s=>s.id)).in('student_id', studentIds);
+
+            const results = (enrollments || []).map(e => {
+                const stu = e.users_data;
+                let present = 0; let absent = 0;
+                const stuSessions = (sessions||[]).map(s => {
+                    const isPresent = (attendance||[]).some(a => a.student_id === stu.id && a.session_id === s.id);
+                    if(isPresent) present++; else absent++;
+                    return { name: s.session_name, val: isPresent ? 'حضور' : 'غياب' };
+                });
+                return { name: stu.full_name, id: stu.national_id, present, absent, sessions: stuSessions, rowIndex: stu.id };
+            });
+
+            return { status: 'success', results, sessionHeaders: (sessions||[]).map(s=>s.session_name) };
+          }
+
+          case 'updateAttendanceCell': {
+             // تعديل الحضور يدوياً من طرف المدير
+             const { uni, course, rowIndex: studentId, status, sessionName, editorName } = payload;
+             
+             const { data: cData } = await supabase.from('courses').select('id').eq('university', uni).eq('course_name', course).single();
+             if(!cData) return { status: 'error' };
+
+             const { data: sData } = await supabase.from('sessions').select('id').eq('course_id', cData.id).eq('session_name', sessionName).single();
+             if(!sData) return { status: 'error' };
+
+             let editorId = null;
+             if(editorName) {
+                 const { data: edData } = await supabase.from('users_data').select('id').eq('full_name', editorName).limit(1).single();
+                 if(edData) editorId = edData.id;
+             }
+
+             if (status === 'present') {
+                 // إضافة حضور
+                 await supabase.from('attendance_logs').insert({
+                     session_id: sData.id,
+                     student_id: studentId,
+                     scanned_by: editorId || studentId
+                 });
+                 const nowStr = new Date().toLocaleString('ar-EG', { timeZone: 'Africa/Cairo' });
+                 return { status: 'success', newValue: `${nowStr}\n(تعديل يدوي)` };
+             } else {
+                 // حذف الحضور
+                 await supabase.from('attendance_logs').delete().eq('session_id', sData.id).eq('student_id', studentId);
+                 return { status: 'success', newValue: '' };
+             }
+          }
           default:
             return { status: 'error', message: 'الإجراء غير مدعوم حالياً في النسخة الجديدة' };
         }
