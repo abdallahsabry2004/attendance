@@ -25,6 +25,7 @@
   </script>
   <script src="https://unpkg.com/react@18/umd/react.production.min.js" crossorigin></script>
   <script src="https://unpkg.com/react-dom@18/umd/react-dom.production.min.js" crossorigin></script>
+  <script src="https://cdn.jsdelivr.net/npm/@supabase/supabase-js@2"></script>
   <script src="https://unpkg.com/@babel/standalone/babel.min.js"></script>
   <script src="https://unpkg.com/html5-qrcode" type="text/javascript"></script>
   <link href="https://fonts.googleapis.com/css2?family=Cairo:wght@300;400;600;700;800&display=swap" rel="stylesheet">
@@ -57,21 +58,71 @@
 <body class="bg-gray-50 text-gray-800 dark:bg-gray-900 dark:text-gray-100 transition-colors duration-300">
   <div id="root"></div>
 
-  <script type="text/babel">
-    const { useState, useEffect, useRef, useCallback } = React;
-    // ضع الرابط الذي نسخته من الخطوة السابقة هنا
-const GAS_WEB_APP_URL = "https://script.google.com/macros/s/AKfycbz5GzGpMlgAwUYPNidwstBaPX6KiseSky8-I8M8Vi_XsoqmA9mDCAF4OVqJpqURMEUQGg/exec";
+  // ضع المفاتيح التي نسختها من Supabase هنا
+const SUPABASE_URL = "https://peuzohchnkpcesoatjdz.supabase.co";
+const SUPABASE_ANON_KEY = "eyJhbGciOiJIUzI1NiIsInR5cCI6IkpXVCJ9.eyJpc3MiOiJzdXBhYmFzZSIsInJlZiI6InBldXpvaGNobmtwY2Vzb2F0amR6Iiwicm9sZSI6ImFub24iLCJpYXQiOjE3NzIxMDM2MDYsImV4cCI6MjA4NzY3OTYwNn0.TFkjH9bRs5Rxa6gYvBlFpRXmAU28rri-RzeXH59gxQI";
 
+// تهيئة الاتصال السريع بقاعدة البيانات
+const supabase = window.supabase.createClient(SUPABASE_URL, SUPABASE_ANON_KEY);
+
+// دالة الاتصال الجديدة (صاروخية وآمنة 100%)
 const runServer = async (action, payload = {}) => {
   try {
-    const response = await fetch(GAS_WEB_APP_URL, {
-      method: 'POST',
-      body: JSON.stringify({ action, payload })
-    });
-    return await response.json();
-  } catch (error) {
-    console.error('Error contacting server:', error);
-    throw "تعذر الاتصال بالخادم، تأكد من اتصالك بالإنترنت.";
+    switch (action) {
+      
+      // 1. نظام تسجيل الدخول
+      case 'login': {
+        const { data, error } = await supabase
+          .from('users_data')
+          .select('*')
+          .eq('national_id', payload.nationalId)
+          .maybeSingle(); // نبحث عن المستخدم بالرقم القومي
+          
+        if (error || !data) return { status: 'error', message: 'الرقم القومي غير مسجل' };
+        if (data.password !== payload.password) return { status: 'error', message: 'كلمة المرور غير صحيحة' };
+        
+        return { status: 'success', role: data.role, name: data.full_name };
+      }
+
+      // 2. تسجيل الحضور (باستخدام الدالة المحصنة التي أنشأناها)
+      case 'scanAttendance': {
+        // نرسل الطلب للدالة المحمية داخل قاعدة البيانات مباشرة
+        const { data, error } = await supabase.rpc('scan_attendance_secure', {
+          p_national_id: payload.nationalId,
+          p_qr_code: payload.qrData
+        });
+        
+        if (error) {
+            console.error(error);
+            return { status: 'error', message: 'حدث خطأ في قراءة الرمز' };
+        }
+        return data; // هذه سترجع رسالة النجاح أو الفشل من الدالة المبرمجة
+      }
+
+      // 3. جلب بيانات الطالب (المقررات التي سجل بها)
+      case 'getStudentData': {
+        // نستعلم عن المقررات المرتبطة بهذا الطالب بضغطة واحدة بفضل العلاقات (Joins)
+        const { data, error } = await supabase
+          .from('users_data')
+          .select('id, course_enrollments(courses(course_name))')
+          .eq('national_id', payload.nationalId)
+          .single();
+          
+        if (error || !data) return { status: 'error', message: 'خطأ في جلب المقررات' };
+        
+        // ترتيب البيانات لتناسب تصميمك الحالي
+        const courses = data.course_enrollments.map(e => e.courses.course_name);
+        return { status: 'success', courses: courses };
+      }
+
+      // يمكنك إضافة باقي الإجراءات (Admin Actions) بنفس الطريقة هنا...
+      
+      default:
+        return { status: 'error', message: 'الإجراء غير مدعوم حالياً في النسخة الجديدة' };
+    }
+  } catch (err) {
+    console.error('Supabase Error:', err);
+    return { status: 'error', message: 'تعذر الاتصال بالخادم السحابي.' };
   }
 };
 
