@@ -73,6 +73,7 @@
     const runServer = async (action, payload = {}) => {
       try {
         switch (action) {
+          
           case 'login': {
             const { data, error } = await supabase
               .from('users_data')
@@ -80,11 +81,47 @@
               .eq('national_id', payload.nationalId)
               .maybeSingle(); 
               
+            // 1. إذا كان الرقم القومي غير موجود نهائياً
             if (error || !data) return { status: 'error', message: 'الرقم القومي غير مسجل' };
-            if (data.password !== payload.password) return { status: 'error', message: 'كلمة المرور غير صحيحة' };
             
+            // 2. الخطوة الأولى في الواجهة (فحص الرقم القومي فقط بدون إرسال كلمة المرور)
+            if (!payload.password) {
+                // إذا لم يكن لديه كلمة مرور مسجلة في قاعدة البيانات
+                if (!data.password || data.password.trim() === '') {
+                    return { status: 'create_password', role: data.role, name: data.full_name };
+                }
+                // إذا كان لديه كلمة مرور، نطلب منه إدخالها
+                return { status: 'require_password', role: data.role, name: data.full_name };
+            }
+
+            // 3. الخطوة الثانية (التحقق من كلمة المرور المدخلة)
+            if (data.password !== payload.password) {
+                return { status: 'error', message: 'كلمة المرور غير صحيحة' };
+            }
+            
+            // نجاح تسجيل الدخول
             return { status: 'success', role: data.role, name: data.full_name };
           }
+
+          // إضافة دالة تسجيل وتغيير كلمة المرور
+          case 'registerPassword':
+          case 'changePassword': {
+            const { error } = await supabase
+              .from('users_data')
+              .update({ password: payload.newPassword })
+              .eq('national_id', payload.nationalId);
+              
+            if (error) return { status: 'error', message: 'حدث خطأ أثناء حفظ كلمة المرور' };
+            
+            // عند إنشاء كلمة المرور بنجاح، نرسل بيانات المستخدم ليدخل مباشرة
+            if(action === 'registerPassword') {
+               const { data } = await supabase.from('users_data').select('role, full_name').eq('national_id', payload.nationalId).single();
+               return { status: 'success', message: 'تم الحفظ', role: data.role, name: data.full_name };
+            }
+            
+            return { status: 'success', message: 'تم تحديث كلمة المرور بنجاح' };
+          }
+            
           case 'scanAttendance': {
             const { data, error } = await supabase.rpc('scan_attendance_secure', {
               p_national_id: payload.nationalId,
