@@ -84,65 +84,71 @@
     const runServer = async (action, payload = {}) => {
       try {
         if (action === 'login') {
-            const res = await supabaseClient.from('users_data').select('*').eq('national_id', payload.nationalId).maybeSingle();
-            if (res.error || !res.data) {
-                return { status: 'error', message: 'الرقم القومي غير مسجل' };
-            }
-            if (!payload.password) {
-                if (!res.data.password || res.data.password.trim() === '') {
-                    return { status: 'create_password', role: res.data.role, name: res.data.full_name };
-                }
-                return { status: 'require_password', role: res.data.role, name: res.data.full_name };
-            }
-            if (res.data.password !== payload.password) {
-                return { status: 'error', message: 'كلمة المرور غير صحيحة' };
-            }
-            return { status: 'success', role: res.data.role, name: res.data.full_name };
+    // استخدام الدالة الآمنة (RPC) بدلاً من الاستعلام المباشر عن الجدول
+    const res = await supabaseClient.rpc('secure_login', { p_national_id: payload.nationalId });
+    
+    // التحقق من وجود خطأ أو عدم وجود المستخدم
+    if (res.error || !res.data || res.data.length === 0) {
+        return { status: 'error', message: 'الرقم القومي غير مسجل' };
+    }
+
+    const userData = res.data[0]; // البيانات العائدة من الدالة
+
+    if (!payload.password) {
+        if (!userData.stored_password || userData.stored_password.trim() === '') {
+            return { status: 'create_password', role: userData.user_role, name: userData.user_name };
         }
+        return { status: 'require_password', role: userData.user_role, name: userData.user_name };
+    }
+    
+    if (userData.stored_password !== payload.password) {
+        return { status: 'error', message: 'كلمة المرور غير صحيحة' };
+    }
+    
+    return { status: 'success', role: userData.user_role, name: userData.user_name };
+}
 
         if (action === 'registerPassword' || action === 'changePassword') {
-            const res = await supabaseClient.from('users_data').update({ password: payload.newPassword }).eq('national_id', payload.nationalId);
-            if (res.error) {
-                return { status: 'error', message: 'الطالب غير موجود' };
-            }
-            if (action === 'registerPassword') {
-                const userRes = await supabaseClient.from('users_data').select('role, full_name').eq('national_id', payload.nationalId).single();
-                return { status: 'success', message: 'تم التحديث', role: userRes.data.role, name: userRes.data.full_name };
-            }
-            return { status: 'success', message: 'تم تحديث كلمة المرور' };
+            // استدعاء الدالة الآمنة بدلاً من التعديل المباشر
+            const res = await supabaseClient.rpc('secure_change_password', { 
+                p_national_id: payload.nationalId, 
+                p_new_password: payload.newPassword,
+                p_allowed_roles: ['student', 'admin', 'moderator'] 
+            });
+            if (res.error) return { status: 'error', message: 'خطأ في الاتصال بالخادم' };
+            return res.data; // الدالة في السيرفر تعيد لنا الـ JSON الجاهز
         }
 
         if (action === 'changeModeratorPassword') {
-            const res = await supabaseClient.from('users_data').update({ password: payload.newPassword }).eq('national_id', payload.nationalId).in('role', ['admin', 'moderator']);
-            if (res.error) {
-                return { status: 'error', message: 'المدير غير موجود' };
-            }
-            return { status: 'success', message: 'تم تحديث كلمة المرور بنجاح' };
+            const res = await supabaseClient.rpc('secure_change_password', { 
+                p_national_id: payload.nationalId, 
+                p_new_password: payload.newPassword,
+                p_allowed_roles: ['admin', 'moderator'] 
+            });
+            if (res.error) return { status: 'error', message: 'خطأ في الاتصال بالخادم' };
+            return res.data;
         }
 
         if (action === 'getStudentData') {
-            const res = await supabaseClient.from('users_data').select('id, course_enrollments(courses(university, course_name))').eq('national_id', payload.nationalId).single();
+            const res = await supabaseClient.rpc('secure_get_student_courses', { p_national_id: payload.nationalId });
             if (res.error || !res.data) return { status: 'error', courses: [] };
-            const coursesList = res.data.course_enrollments.map(e => e.courses.university + " " + e.courses.course_name);
+            
+            // تحويل البيانات القادمة إلى مصفوفة نصوص
+            const coursesList = res.data.map(item => item.course_name);
             return { status: 'success', courses: coursesList };
         }
 
         if (action === 'scanAttendance') {
-            let stuRes = await supabaseClient.from('users_data').select('id, full_name').eq('national_id', payload.nationalId).single();
-            if (stuRes.error || !stuRes.data) return { status: 'error', message: 'الطالب غير موجود' };
-            let student = stuRes.data;
-
-            let sessRes = await supabaseClient.from('sessions').select('*, users_data!creator_id(full_name)').or(`qr_code.eq.${payload.qrData},pin_code.eq.${payload.qrData}`).maybeSingle();
-            if (sessRes.error || !sessRes.data) return { status: 'error', message: 'الرمز غير صحيح أو الجلسة غير موجودة' };
-            let sessionData = sessRes.data;
-
-            if (!sessionData.is_active) return { status: 'error', message: 'تم إغلاق الجلسة' };
-
-            let createdTime = new Date(sessionData.created_at);
-            if (((new Date() - createdTime) / 1000 / 60) > sessionData.duration_minutes) {
-                await supabaseClient.from('sessions').update({ is_active: false }).eq('id', sessionData.id);
-                return { status: 'error', message: 'انتهى الوقت المحدد للجلسة' };
-            }
+            // السحر كله هنا: تم نقل كل الشروط المنطقية للحماية إلى السيرفر!
+            // الواجهة الأمامية ترسل فقط الرقم القومي وبيانات الـ QR
+            const res = await supabaseClient.rpc('secure_scan_attendance', { 
+                p_national_id: payload.nationalId, 
+                p_qr_data: payload.qrData 
+            });
+            
+            if (res.error) return { status: 'error', message: 'خطأ في الخادم أثناء تسجيل الحضور' };
+            return res.data; // يعيد { status: 'success', message: '...' }
+        }
 
             let enrollRes = await supabaseClient.from('course_enrollments').select('id').eq('course_id', sessionData.course_id).eq('student_id', student.id).maybeSingle();
             if (enrollRes.error || !enrollRes.data) return { status: 'error', message: 'غير مسجل في هذا المقرر' };
