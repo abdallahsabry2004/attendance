@@ -138,65 +138,56 @@
         }
         
         if (action === 'getStudentHistory') {
-            const cRes = await supabaseClient.from('courses').select('id').eq('university', payload.uni).eq('course_name', payload.course).single();
-            const sRes = await supabaseClient.from('users_data').select('id').eq('national_id', payload.nationalId).single();
-            if (cRes.error || sRes.error) return { status: 'error', message: 'خطأ في جلب البيانات' };
-
-            const allSess = await supabaseClient.from('sessions').select('session_name, created_at').eq('course_id', cRes.data.id).order('created_at', { ascending: true });
-            const orderedNames = [...new Set((allSess.data || []).map(s => s.session_name))];
-
-            const attRes = await supabaseClient.from('attendance_logs').select('session_name, scanned_at, users_data!scanned_by(full_name), is_manual').eq('student_id', sRes.data.id).eq('course_id', cRes.data.id);
-            const attendance = attRes.data || [];
+            const res = await supabaseClient.rpc('secure_get_student_records', { p_national_id: payload.nationalId });
+            if (res.error || !res.data) return { status: 'error', message: 'خطأ في جلب البيانات' };
+            
+            const { enrollments, sessions, attendance } = res.data;
+            const myCourse = enrollments.find(e => e.uni === payload.uni && e.course === payload.course);
+            if (!myCourse) return { status: 'error', message: 'غير مسجل في هذا المقرر' };
+            
+            const courseSessions = sessions.filter(s => s.course_id === myCourse.course_id).sort((a,b) => new Date(a.created_at) - new Date(b.created_at));
+            const orderedNames = [...new Set(courseSessions.map(s => s.session_name))];
+            const courseAttendance = attendance.filter(a => a.course_id === myCourse.course_id);
 
             let presentCount = 0; let absentCount = 0; let formattedSessions = [];
             
             orderedNames.forEach(sName => {
-                const record = attendance.find(a => a.session_name === sName);
+                const record = courseAttendance.find(a => a.session_name === sName);
                 if (record) {
                     presentCount++;
-                    const dObj = new Date(record.scanned_at);
-                    const manager = record.users_data ? record.users_data.full_name : '';
+                    const manager = record.scanned_by_name || '';
                     const manualText = record.is_manual ? ' (تعديل يدوي)' : '';
-                    const tStr = `${dObj.toLocaleString('ar-EG', {timeZone: 'Africa/Cairo'})} - (مع ${manager}${manualText})`;
+                    const tStr = `${new Date(record.scanned_at).toLocaleString('ar-EG', {timeZone: 'Africa/Cairo'})} - (مع ${manager}${manualText})`;
                     formattedSessions.push({ name: sName, status: 'حضور', time: tStr, color: 'green' });
                 } else {
                     absentCount++;
-                    const sInfo = allSess.data.find(x => x.session_name === sName);
+                    const sInfo = courseSessions.find(x => x.session_name === sName);
                     const tStr = sInfo ? new Date(sInfo.created_at).toLocaleString('ar-EG', {timeZone: 'Africa/Cairo'}) : '-';
                     formattedSessions.push({ name: sName, status: 'غياب', time: tStr, color: 'red' });
                 }
             });
-
             return { status: 'success', data: { sessions: formattedSessions, presentCount, absentCount } };
         }
 
         if (action === 'getStudentWarnings') {
-            const sRes = await supabaseClient.from('users_data').select('id').eq('national_id', payload.nationalId).single();
-            if (sRes.error) return { status: 'success', warnings: [] };
+            const res = await supabaseClient.rpc('secure_get_student_records', { p_national_id: payload.nationalId });
+            if (res.error || !res.data) return { status: 'success', warnings: [] };
             
-            const eRes = await supabaseClient.from('course_enrollments').select('course_id, courses(university, course_name)').eq('student_id', sRes.data.id);
-            const enrollments = eRes.data || [];
-            if (enrollments.length === 0) return { status: 'success', warnings: [] };
-
-            const cIds = enrollments.map(e => e.course_id);
-            const allSessRes = await supabaseClient.from('sessions').select('course_id, session_name').in('course_id', cIds);
-            const attRes = await supabaseClient.from('attendance_logs').select('course_id, session_name').eq('student_id', sRes.data.id).in('course_id', cIds);
-
+            const { enrollments, sessions, attendance } = res.data;
             let warnings = [];
+            
             enrollments.forEach(en => {
-                const cName = en.courses.university + " " + en.courses.course_name;
-                const cSessions = (allSessRes.data || []).filter(s => s.course_id === en.course_id);
+                const cName = en.uni + " " + en.course;
+                const cSessions = sessions.filter(s => s.course_id === en.course_id);
                 const uniqueNames = [...new Set(cSessions.map(s => s.session_name))];
                 let absCount = 0;
                 
                 uniqueNames.forEach(sName => {
-                    const attended = (attRes.data || []).some(a => a.course_id === en.course_id && a.session_name === sName);
+                    const attended = attendance.some(a => a.course_id === en.course_id && a.session_name === sName);
                     if (!attended) absCount++;
                 });
 
-                if (absCount >= 3) {
-                    warnings.push({ course: cName, absentCount: absCount, type: absCount >= 4 ? 'deprived' : 'warning' });
-                }
+                if (absCount >= 3) { warnings.push({ course: cName, absentCount: absCount, type: absCount >= 4 ? 'deprived' : 'warning' }); }
             });
             return { status: 'success', warnings };
         }
@@ -343,182 +334,100 @@
             }
 
             if (type === 'getCourseWarnings') {
-                const cRes = await supabaseClient.from('courses').select('id').eq('university', uni).eq('course_name', course).single();
-                if (cRes.error) return { status: 'error' };
-                
-                const eRes = await supabaseClient.from('course_enrollments').select('users_data(full_name, national_id, id)').eq('course_id', cRes.data.id);
-                const sRes = await supabaseClient.from('sessions').select('session_name').eq('course_id', cRes.data.id);
-                const uniqueNames = [...new Set((sRes.data || []).map(s=>s.session_name))];
-                const attRes = await supabaseClient.from('attendance_logs').select('student_id, session_name').eq('course_id', cRes.data.id);
+                const res = await supabaseClient.rpc('secure_get_report_data', { p_uni: uni, p_course: course });
+                if (res.error || !res.data) return { status: 'error' };
+                const { enrollments, sessions, attendance } = res.data;
+                const uniqueNames = [...new Set(sessions.map(s => s.session_name))];
                 
                 let warnings = [];
-                (eRes.data || []).forEach(e => {
+                enrollments.forEach(e => {
                     let absCount = 0;
                     uniqueNames.forEach(sn => {
-                        const attended = (attRes.data || []).some(a => a.student_id === e.users_data.id && a.session_name === sn);
+                        const attended = attendance.some(a => a.student_id === e.id && a.session_name === sn);
                         if (!attended) absCount++;
                     });
-                    if (payload.warningType === 'warning' && absCount === 3) warnings.push({ name: e.users_data.full_name, id: e.users_data.national_id, absentCount: absCount });
-                    else if (payload.warningType === 'deprived' && absCount >= 4) warnings.push({ name: e.users_data.full_name, id: e.users_data.national_id, absentCount: absCount });
+                    if (payload.warningType === 'warning' && absCount === 3) warnings.push({ name: e.full_name, id: e.national_id, absentCount: absCount });
+                    else if (payload.warningType === 'deprived' && absCount >= 4) warnings.push({ name: e.full_name, id: e.national_id, absentCount: absCount });
                 });
                 return { status: 'success', warnings };
             }
         }
 
-        if (action === 'getCourseReport') {
-            const cRes = await supabaseClient.from('courses').select('id').eq('university', payload.uni).eq('course_name', payload.course).single();
-            if (cRes.error) return { status: 'error' };
-            const sRes = await supabaseClient.from('sessions').select('session_name').eq('course_id', cRes.data.id);
-            const uniqueNames = [...new Set((sRes.data || []).map(s => s.session_name))];
+        if (action === 'getCourseReport' || action === 'getIsolatedCourseReport') {
+            const targetMod = action === 'getIsolatedCourseReport' ? payload.targetModerator : null;
+            const res = await supabaseClient.rpc('secure_get_report_data', { p_uni: payload.uni, p_course: payload.course, p_target_mod: targetMod });
+            if (res.error || !res.data) return { status: 'error' };
+            const { enrollments, sessions, attendance } = res.data;
+            
+            const uniqueNames = [...new Set(sessions.map(s => s.session_name))];
             uniqueNames.sort((a, b) => a.localeCompare(b, 'ar', { numeric: true }));
             
-            const eRes = await supabaseClient.from('course_enrollments').select('users_data(id, full_name, national_id)').eq('course_id', cRes.data.id);
-            const attRes = await supabaseClient.from('attendance_logs').select('student_id, session_name, scanned_at, users_data!scanned_by(full_name), is_manual').eq('course_id', cRes.data.id);
-            
             const headers = ["اسم الطالب", "حضور", "غياب", "الرقم القومي", ...uniqueNames];
-            const rows = (eRes.data || []).map(e => {
+            const rows = enrollments.map(e => {
                 let p = 0, a = 0;
-                const stu = e.users_data;
                 const statusCols = uniqueNames.map(sn => {
-                    const rec = (attRes.data || []).find(x => x.student_id === stu.id && x.session_name === sn);
-                    if (rec) {
-                        p++;
-                        return "✓";
-                    }
-                    a++;
-                    return "✗";
+                    const rec = attendance.find(x => x.student_id === e.id && x.session_name === sn);
+                    if (rec) { p++; return "✓"; }
+                    a++; return "✗";
                 });
-                return [stu.full_name, p, a, stu.national_id, ...statusCols];
-            }).sort((a,b) => String(a[0]).localeCompare(String(b[0]), 'ar'));
-            
-            return { status: 'success', headers, rows, count: rows.length };
-        }
-
-        if (action === 'getIsolatedCourseReport') {
-            const { uni, course, targetModerator } = payload;
-            const uRes = await supabaseClient.from('users_data').select('id').eq('full_name', targetModerator).maybeSingle();
-            const modId = uRes.data ? uRes.data.id : null;
-
-            const cRes = await supabaseClient.from('courses').select('id').eq('university', uni).eq('course_name', course).single();
-            if (cRes.error) return { status: 'error' };
-
-            const sRes = await supabaseClient.from('sessions').select('session_name, created_at').eq('course_id', cRes.data.id).eq('creator_id', modId);
-            let orderedNames = [...new Set((sRes.data||[]).map(s => s.session_name))];
-            orderedNames.sort((a, b) => a.localeCompare(b, 'ar', { numeric: true }));
-            
-            const eRes = await supabaseClient.from('course_enrollments').select('users_data(id, full_name, national_id)').eq('course_id', cRes.data.id);
-            
-            let q = supabaseClient.from('attendance_logs').select('student_id, session_name, scanned_at, users_data!scanned_by(full_name), is_manual').eq('course_id', cRes.data.id).in('session_name', orderedNames);
-            if (modId) q = q.eq('scanned_by', modId);
-            const attRes = await q;
-
-            const headers = ["اسم الطالب", "حضور", "غياب", "الرقم القومي", ...orderedNames];
-            const rows = (eRes.data || []).map(e => {
-                let p = 0, a = 0;
-                const stu = e.users_data;
-                const statusCols = orderedNames.map(sn => {
-                    const rec = (attRes.data || []).find(x => x.student_id === stu.id && x.session_name === sn);
-                    if (rec) {
-                        p++;
-                        return "✓";
-                    }
-                    a++;
-                    return "✗";
-                });
-                return [stu.full_name, p, a, stu.national_id, ...statusCols];
+                return [e.full_name, p, a, e.national_id, ...statusCols];
             }).sort((a,b) => String(a[0]).localeCompare(String(b[0]), 'ar'));
             
             return { status: 'success', headers, rows, count: rows.length };
         }
 
         if (action === 'getSessionReport') {
-            const { uni, course, session } = payload;
-            const cRes = await supabaseClient.from('courses').select('id').eq('university', uni).eq('course_name', course).single();
-            if (cRes.error) return { status: 'error' };
-
-            const eRes = await supabaseClient.from('course_enrollments').select('users_data(id, full_name, national_id)').eq('course_id', cRes.data.id);
-            const attRes = await supabaseClient.from('attendance_logs').select('student_id, scanned_at, users_data!scanned_by(full_name), is_manual').eq('course_id', cRes.data.id).eq('session_name', session);
-
-            const report = (eRes.data || []).map(e => {
-                const stu = e.users_data;
-                const rec = (attRes.data || []).find(x => x.student_id === stu.id);
+            const res = await supabaseClient.rpc('secure_get_report_data', { p_uni: payload.uni, p_course: payload.course });
+            if (res.error || !res.data) return { status: 'error' };
+            const { enrollments, attendance } = res.data;
+            
+            const report = enrollments.map(e => {
+                const rec = attendance.find(x => x.student_id === e.id && x.session_name === payload.session);
                 if (rec) {
-                    const mName = rec.users_data ? rec.users_data.full_name : '';
+                    const mName = rec.scanned_by_name || '';
                     const manualText = rec.is_manual ? ' (تعديل يدوي)' : '';
                     return { 
-                        name: stu.full_name, 
-                        id: stu.national_id, 
-                        status: 'حضور', 
+                        name: e.full_name, id: e.national_id, status: 'حضور', 
                         time: `${new Date(rec.scanned_at).toLocaleString('ar-EG', {timeZone: 'Africa/Cairo'})} - (مع ${mName}${manualText})`, 
-                        color: 'green', 
-                        rowIndex: stu.id, 
-                        rawVal: 'present' 
+                        color: 'green', rowIndex: e.id, rawVal: 'present' 
                     };
                 }
-                return { name: stu.full_name, id: stu.national_id, status: 'غياب', time: '-', color: 'red', rowIndex: stu.id, rawVal: '' };
+                return { name: e.full_name, id: e.national_id, status: 'غياب', time: '-', color: 'red', rowIndex: e.id, rawVal: '' };
             }).sort((a,b) => a.name.localeCompare(b.name, 'ar'));
 
             return { status: 'success', report };
         }
 
         if (action === 'getStudentSearchReport') {
-            const cRes = await supabaseClient.from('courses').select('id').eq('university', payload.uni).eq('course_name', payload.course).single();
-            if (cRes.error) return { status: 'error' };
-
-            const eRes = await supabaseClient.from('course_enrollments').select('users_data!inner(id, full_name, national_id)').eq('course_id', cRes.data.id).or(`full_name.ilike.%${payload.query}%,national_id.ilike.%${payload.query}%`, { foreignTable: 'users_data' });
-            const sRes = await supabaseClient.from('sessions').select('session_name').eq('course_id', cRes.data.id);
-            let orderedNames = [...new Set((sRes.data||[]).map(s => s.session_name))];
+            const res = await supabaseClient.rpc('secure_get_report_data', { p_uni: payload.uni, p_course: payload.course });
+            if (res.error || !res.data) return { status: 'error' };
+            let { enrollments, sessions, attendance } = res.data;
+            
+            const query = payload.query || '';
+            enrollments = enrollments.filter(e => e.full_name.includes(query) || e.national_id.includes(query));
+            
+            let orderedNames = [...new Set(sessions.map(s => s.session_name))];
             orderedNames.sort((a, b) => a.localeCompare(b, 'ar', { numeric: true }));
 
-            const stuIds = (eRes.data||[]).map(e => e.users_data.id);
-            const attRes = await supabaseClient.from('attendance_logs').select('student_id, session_name, is_manual').eq('course_id', cRes.data.id).in('student_id', stuIds);
-
-            const results = (eRes.data || []).map(e => {
-                const stu = e.users_data;
+            const results = enrollments.map(e => {
                 let p = 0, a = 0;
                 const sessInfo = orderedNames.map(sn => {
-                    const rec = (attRes.data||[]).find(x => x.student_id === stu.id && x.session_name === sn);
-                    if (rec) {
-                        p++;
-                        return { name: sn, val: 'حضور', manual: rec.is_manual };
-                    } else {
-                        a++;
-                        return { name: sn, val: 'غياب', manual: false };
-                    }
+                    const rec = attendance.find(x => x.student_id === e.id && x.session_name === sn);
+                    if (rec) { p++; return { name: sn, val: 'حضور', manual: rec.is_manual }; } 
+                    else { a++; return { name: sn, val: 'غياب', manual: false }; }
                 });
-                return { name: stu.full_name, id: stu.national_id, present: p, absent: a, sessions: sessInfo, rowIndex: stu.id };
+                return { name: e.full_name, id: e.national_id, present: p, absent: a, sessions: sessInfo, rowIndex: e.id };
             });
             return { status: 'success', results, sessionHeaders: orderedNames };
         }
 
         if (action === 'updateAttendanceCell') {
-            const { uni, course, rowIndex: stuId, status, sessionName, editorName, editorRole } = payload;
-            const cRes = await supabaseClient.from('courses').select('id').eq('university', uni).eq('course_name', course).single();
-            if (cRes.error) return { status: 'error' };
-
-            let uRes = await supabaseClient.from('users_data').select('id').eq('full_name', editorName).maybeSingle();
-            let editorId = uRes.data ? uRes.data.id : stuId;
-
-            if (status === 'present') {
-                await supabaseClient.from('attendance_logs').insert({ 
-                    course_id: cRes.data.id, 
-                    session_name: sessionName, 
-                    student_id: stuId, 
-                    scanned_by: editorId,
-                    is_manual: true 
-                });
-                const roleLabel = editorRole === 'admin' ? 'مسؤول النظام' : 'مدير';
-                return { 
-                    status: 'success', 
-                    newValue: `${new Date().toLocaleString('ar-EG', {timeZone: 'Africa/Cairo'})} - (مع ${roleLabel} - تعديل يدوي)` 
-                };
-            } else {
-                await supabaseClient.from('attendance_logs').delete().eq('course_id', cRes.data.id).eq('session_name', sessionName).eq('student_id', stuId);
-                return { status: 'success', newValue: '' };
-            }
+            const res = await supabaseClient.rpc('secure_update_attendance', {
+                p_uni: payload.uni, p_course: payload.course, p_student_id: payload.rowIndex,
+                p_status: payload.status, p_session: payload.sessionName, p_editor: payload.editorName
+            });
+            return res.error ? { status: 'error' } : res.data;
         }
-
-        return { status: 'error', message: 'الإجراء غير مدعوم' };
       } catch (err) {
         console.error('Database Error:', err);
         return { status: 'error', message: 'تعذر الاتصال بالخادم السحابي' };
