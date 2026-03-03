@@ -232,62 +232,33 @@
             }
 
             if (type === 'getCourseModerators') {
-                const cRes = await supabaseClient.from('courses').select('id').eq('university', uni).eq('course_name', course).single();
-                if (cRes.error) return { status: 'success', courseModerators: [] };
-                
-                const sRes = await supabaseClient.from('sessions').select('users_data!creator_id(full_name)').eq('course_id', cRes.data.id);
-                let mods = new Set();
-                (sRes.data || []).forEach(s => {
-                    if (s.users_data && s.users_data.full_name !== 'المدير العام' && s.users_data.full_name !== 'admin') {
-                        mods.add(s.users_data.full_name);
-                    }
+                const res = await supabaseClient.rpc('secure_get_course_moderators', { p_uni: uni, p_course: course });
+                if (res.error) return { status: 'success', courseModerators: [] };
+                return res.data;
+            }
+
+            if (type === 'addModerator' || type === 'deleteModerator') {
+                const actionType = type === 'addModerator' ? 'add' : 'delete';
+                const res = await supabaseClient.rpc('secure_manage_moderator', { 
+                    p_action: actionType, 
+                    p_id: payload.id, 
+                    p_name: name || '', 
+                    p_password: payload.password || '' 
                 });
-                return { status: 'success', courseModerators: Array.from(mods) };
+                return res.error ? { status: 'error', message: 'تعذر تنفيذ العملية' } : res.data;
             }
 
-            if (type === 'addModerator') {
-                await supabaseClient.from('users_data').insert({ national_id: payload.id, full_name: name, password: payload.password, role: 'moderator' });
-                return { status: 'success' };
+            if (type === 'addCourse' || type === 'deleteCourse') {
+                const actionType = type === 'addCourse' ? 'add' : 'delete';
+                const res = await supabaseClient.rpc('secure_manage_course', {
+                    p_action: actionType, 
+                    p_uni: uni, 
+                    p_course: courseName, 
+                    p_role: role, 
+                    p_admin_name: name
+                });
+                return res.error ? { status: 'error', message: 'حدث خطأ أثناء إدارة المقرر' } : res.data;
             }
-
-            if (type === 'deleteModerator') {
-                await supabaseClient.from('users_data').delete().eq('national_id', payload.id).eq('role', 'moderator');
-                return { status: 'success' };
-            }
-
-            if (type === 'addCourse') {
-                let courseRes = await supabaseClient.from('courses').select('id').eq('university', uni).eq('course_name', courseName).maybeSingle();
-                let courseId;
-                if (courseRes.error || !courseRes.data) {
-                    const insRes = await supabaseClient.from('courses').insert({ university: uni, course_name: courseName }).select('id').single();
-                    if (insRes.error) return { status: 'error', message: 'حدث خطأ أثناء إنشاء المقرر' };
-                    courseId = insRes.data.id;
-                } else {
-                    courseId = courseRes.data.id;
-                }
-                if (adminUuid) {
-                    await supabaseClient.from('course_managers').upsert({ course_id: courseId, manager_id: adminUuid }, { onConflict: 'course_id, manager_id' });
-                }
-                return { status: 'success' };
-            }
-
-            if (type === 'deleteCourse') {
-                if (role === 'admin') {
-                    await supabaseClient.from('courses').delete().eq('university', uni).eq('course_name', courseName);
-                } else if (adminUuid) {
-                    const cRes = await supabaseClient.from('courses').select('id').eq('university', uni).eq('course_name', courseName).single();
-                    if (cRes.data) {
-                        await supabaseClient.from('sessions').delete().eq('course_id', cRes.data.id).eq('creator_id', adminUuid);
-                        await supabaseClient.from('course_managers').delete().eq('course_id', cRes.data.id).eq('manager_id', adminUuid);
-                        const remainingManagers = await supabaseClient.from('course_managers').select('manager_id').eq('course_id', cRes.data.id);
-                        if (remainingManagers.data && remainingManagers.data.length === 0) {
-                            await supabaseClient.from('courses').delete().eq('id', cRes.data.id);
-                        }
-                    }
-                }
-                return { status: 'success' };
-            }
-
             if (type === 'getLastSession') {
                 const cRes = await supabaseClient.from('courses').select('id').eq('university', uni).eq('course_name', course).single();
                 if (cRes.error) return { status: 'success', lastSession: 'لا يوجد' };
