@@ -207,25 +207,28 @@
             let adminUuid = uRes.data ? uRes.data.id : null;
 
             if (type === 'getAdminData') {
-                const cRes = await supabaseClient.from('courses').select('*');
-                let allowedCourses = cRes.data || [];
+                // استدعاء الدالة الآمنة من السيرفر
+                const res = await supabaseClient.rpc('secure_get_admin_data', { p_role: role, p_admin_name: name });
                 
-                if (role === 'moderator' && adminUuid) {
-                    const managerRes = await supabaseClient.from('course_managers').select('course_id').eq('manager_id', adminUuid);
-                    const managedIds = (managerRes.data || []).map(m => m.course_id);
-                    allowedCourses = allowedCourses.filter(c => managedIds.includes(c.id));
+                if (res.error || !res.data) {
+                    return { status: 'error', data: {}, materials: [], moderators: [] };
                 }
-
+                
+                const allowedCourses = res.data.courses || [];
                 const tree = {};
+                
+                // تنظيم البيانات للواجهة
                 allowedCourses.forEach(c => {
                     if (!tree[c.university]) tree[c.university] = [];
                     tree[c.university].push(c.course_name);
                 });
 
-                const modRes = await supabaseClient.from('users_data').select('national_id, full_name').eq('role', 'moderator');
-                const moderators = (modRes.data || []).map(m => ({ name: m.full_name, id: m.national_id }));
-                const materials = [...new Set((cRes.data || []).map(c => c.course_name))];
-                return { status: 'success', data: tree, materials, moderators };
+                return { 
+                    status: 'success', 
+                    data: tree, 
+                    materials: res.data.materials, 
+                    moderators: res.data.moderators 
+                };
             }
 
             if (type === 'getCourseModerators') {
