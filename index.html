@@ -187,7 +187,7 @@
                     if (!attended) absCount++;
                 });
 
-                if (absCount >= 3) { warnings.push({ course: cName, absentCount: absCount, type: absCount >= 4 ? 'deprived' : 'warning' }); }
+                if (absCount >= 2) { warnings.push({ course: cName, absentCount: absCount, type: absCount >= 4 ? 'deprived' : 'warning' }); }
             });
             return { status: 'success', warnings };
         }
@@ -346,7 +346,7 @@
                         const attended = attendance.some(a => a.student_id === e.id && a.session_name === sn);
                         if (!attended) absCount++;
                     });
-                    if (payload.warningType === 'warning' && absCount === 3) warnings.push({ name: e.full_name, id: e.national_id, absentCount: absCount });
+                    if (payload.warningType === 'warning' && (absCount === 2 || absCount === 3)) warnings.push({ name: e.full_name, id: e.national_id, absentCount: absCount });
                     else if (payload.warningType === 'deprived' && absCount >= 4) warnings.push({ name: e.full_name, id: e.national_id, absentCount: absCount });
                 });
                 return { status: 'success', warnings };
@@ -1436,8 +1436,8 @@
                         </select>
                     </div>
                     <select className="border-2 border-gray-100 dark:border-gray-600 dark:bg-gray-700 dark:text-white p-3 rounded-2xl outline-none" value={wType} onChange={e => {setWType(e.target.value); setSearched(false);}}>
-                        <option value="warning">إنذار غياب (3 غيابات)</option>
-                        <option value="deprived">حرمان (4 غيابات أو أكثر)</option>
+                        <option value="warning">إنذارات الغياب</option>
+                        <option value="deprived">الحرمان</option>
                     </select>
                     <Button loading={loading} onClick={load} className="bg-blue-600 text-white px-8 rounded-2xl font-bold">بحث</Button>
                     <button onClick={() => window.print()} className="bg-gray-800 text-white px-6 rounded-2xl font-bold">طباعة</button>
@@ -1615,7 +1615,7 @@
                                 <th className="pb-4 min-w-[100px]">الجلسة</th>
                                 {user.role === 'admin' && <th className="pb-4 min-w-[100px]">المنشئ</th>}
                                 <th className="pb-4 min-w-[120px]">الإنشاء</th>
-                                <th className="pb-4">الحضور</th>
+                                <th className="pb-4">الحضور والغياب</th>
                                 <th className="pb-4 min-w-[100px]">الحالة</th>
                                 <th className="pb-4 min-w-[150px]">إجراءات</th>
                             </tr>
@@ -1628,8 +1628,11 @@
                                     {user.role === 'admin' && <td className="py-4 text-xs font-bold text-blue-500">{s.creator}</td>}
                                     <td className="py-4 text-xs text-gray-400 dark:text-gray-500">{s.creationDate}</td>
                                     <td className="py-4">
-                                        <span className="text-green-600 dark:text-green-400 font-bold bg-green-50 dark:bg-green-900/20 px-3 py-1 rounded-lg">{s.present}</span>
-                                    </td>
+    <div className="flex justify-center gap-2">
+        <span className="text-green-600 dark:text-green-400 font-bold bg-green-50 dark:bg-green-900/20 px-3 py-1 rounded-lg" title="حضور">{s.present} ✓</span>
+        <span className="text-red-600 dark:text-red-400 font-bold bg-red-50 dark:bg-red-900/20 px-3 py-1 rounded-lg" title="غياب">{s.absent} ✗</span>
+    </div>
+</td>
                                     <td className="py-4">
                                         <span className={`px-3 py-1 rounded-lg text-[10px] font-bold ${s.qrStatus === 'يعمل' ? 'bg-green-100 dark:bg-green-900/30 text-green-700 dark:text-green-300' : 'bg-red-100 dark:bg-red-900/30 text-red-700 dark:text-red-300'}`}>
                                             {s.qrStatus}
