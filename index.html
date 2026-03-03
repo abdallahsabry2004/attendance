@@ -260,102 +260,38 @@
                 return res.error ? { status: 'error', message: 'حدث خطأ أثناء إدارة المقرر' } : res.data;
             }
             if (type === 'getLastSession') {
-                const cRes = await supabaseClient.from('courses').select('id').eq('university', uni).eq('course_name', course).single();
-                if (cRes.error) return { status: 'success', lastSession: 'لا يوجد' };
-                
-                let q = supabaseClient.from('sessions').select('session_name').eq('course_id', cRes.data.id);
-                if (role === 'moderator' && adminUuid) q = q.eq('creator_id', adminUuid);
-                
-                const sRes = await q;
-                const count = new Set((sRes.data || []).map(s => s.session_name)).size;
-                return { status: 'success', lastSession: count > 0 ? "الجلسة " + count : 'لا يوجد' };
+                const res = await supabaseClient.rpc('secure_get_last_session', { p_uni: uni, p_course: course, p_role: role, p_admin_name: name });
+                return res.error ? { status: 'success', lastSession: 'لا يوجد' } : res.data;
             }
 
             if (type === 'createSession' || type === 'changeQR') {
-                const cRes = await supabaseClient.from('courses').select('id').eq('university', uni).eq('course_name', course).single();
-                if (cRes.error) return { status: 'error', message: 'المقرر غير موجود' };
-                let cId = cRes.data.id;
-
-                const pinCode = Math.floor(100000 + Math.random() * 900000).toString();
-                let targetSessionName = payload.sessionNameOverride;
-
-                if (type === 'createSession') {
-                    let q = supabaseClient.from('sessions').select('session_name').eq('course_id', cId);
-                    if (role === 'moderator' && adminUuid) q = q.eq('creator_id', adminUuid);
-                    
-                    const sRes = await q;
-                    const count = new Set((sRes.data || []).map(s => s.session_name)).size;
-                    targetSessionName = "الجلسة " + (count + 1);
-                    
-                    const qrData = `${uni}|separator|${course}|separator|${targetSessionName}|separator|${pinCode}`;
-                    await supabaseClient.from('sessions').insert({
-                        course_id: cId, session_name: targetSessionName, qr_code: qrData, pin_code: pinCode, duration_minutes: payload.duration, creator_id: adminUuid
-                    });
-                    return { status: 'success', qrData, sessionName: targetSessionName, pinCode };
-                }
-
-                if (type === 'changeQR') {
-                    const qrData = `${uni}|separator|${course}|separator|${targetSessionName}|separator|${pinCode}`;
-                    let query = supabaseClient.from('sessions').update({
-                        duration_minutes: payload.duration, qr_code: qrData, pin_code: pinCode, is_active: true, created_at: new Date().toISOString()
-                    });
-                    
-                    if (payload.originalQrCode) {
-                        query = query.eq('qr_code', payload.originalQrCode);
-                    } else {
-                        query = query.eq('course_id', cId).eq('session_name', targetSessionName);
-                        if (role === 'moderator' && adminUuid) query = query.eq('creator_id', adminUuid);
-                    }
-                    
-                    await query;
-                    return { status: 'success', qrData, sessionName: targetSessionName, pinCode };
-                }
+                const res = await supabaseClient.rpc('secure_manage_session_qr', {
+                    p_type: type, p_uni: uni, p_course: course, p_duration: payload.duration,
+                    p_role: role, p_admin_name: name, p_session_override: payload.sessionNameOverride || '',
+                    p_original_qr: payload.originalQrCode || ''
+                });
+                return res.error ? { status: 'error', message: 'المقرر غير موجود أو حدث خطأ' } : res.data;
             }
 
             if (type === 'getSessionDetails') {
-                const cRes = await supabaseClient.from('courses').select('id').eq('university', uni).eq('course_name', course).single();
-                if (cRes.error) return { status: 'error' };
+                const res = await supabaseClient.rpc('secure_get_session_details', { p_uni: uni, p_course: course, p_role: role, p_admin_name: name });
+                if (res.error || !res.data || res.data.status === 'error') return { status: 'error' };
                 
-                let q = supabaseClient.from('sessions').select('id, session_name, is_active, qr_code, created_at, duration_minutes, creator_id, users_data!creator_id(full_name)').eq('course_id', cRes.data.id);
-                if (role === 'moderator' && adminUuid) q = q.eq('creator_id', adminUuid);
-                const sRes = await q;
-                
-                const countRes = await supabaseClient.from('course_enrollments').select('*', {count: 'exact', head: true}).eq('course_id', cRes.data.id);
-                let totalStu = countRes.count || 0;
-
                 let stats = [];
-                for(let s of (sRes.data || [])) {
-                    // حساب الحضور: إذا كان المستخدم مديراً، نحسب فقط الحضور الذي سجله هو.
-                    let presentQuery = supabaseClient.from('attendance_logs').select('*', {count: 'exact', head: true})
-                        .eq('course_id', cRes.data.id)
-                        .eq('session_name', s.session_name);
-                    if (role === 'moderator' && adminUuid) {
-                        presentQuery = presentQuery.eq('scanned_by', adminUuid);
-                    }
-                    let presentRes = await presentQuery;
-                    let present = presentRes.count || 0;
-                    
-                    // تحديد اسم المنشئ
-                    let creatorName = 'مسؤول النظام';
-                    if (s.users_data && s.users_data.full_name) {
-                        creatorName = s.users_data.full_name;
-                    }
-                    
+                const totalStu = res.data.total_students || 0;
+                for(let s of (res.data.sessions || [])) {
+                    let present = s.present_count || 0;
                     let cTime = new Date(s.created_at);
-                    let now = new Date();
-                    let minutesPassed = (now - cTime) / 1000 / 60;
+                    let minutesPassed = (new Date() - cTime) / 1000 / 60;
                     let isActuallyActive = s.is_active && minutesPassed <= s.duration_minutes;
-                    
-                    let qStatus = isActuallyActive ? 'يعمل' : 'لا يعمل';
-                    
                     stats.push({
                         session: s.session_name,
                         present,
                         absent: totalStu - present,
-                        qrStatus: qStatus,
+                        qrStatus: isActuallyActive ? 'يعمل' : 'لا يعمل',
                         qrCode: s.qr_code,
                         creationDate: cTime.toLocaleString('ar-EG', { timeZone: 'Africa/Cairo' }),
-                        creator: creatorName,
+                        creator: s.creator_name || 'مسؤول النظام',
                         creatorId: s.creator_id,
                         isActive: s.is_active,
                         duration: s.duration_minutes,
@@ -366,28 +302,12 @@
                 return { status: 'success', sessions: stats };
             }
 
-            if (type === 'toggleQR') {
-                await supabaseClient.from('sessions').update({ is_active: payload.newStatus === 'يعمل' }).eq('qr_code', payload.qrCode);
-                return { status: 'success' };
-            }
-
-            if (type === 'deleteSession') {
-                const cRes = await supabaseClient.from('courses').select('id').eq('university', uni).eq('course_name', course).single();
-                if (cRes.error) return { status: 'error' };
-                const courseId = cRes.data.id;
-                
-                if (role === 'admin') {
-                    // المسؤول: حذف كل سجلات الحضور لهذه الجلسة أولاً
-                    await supabaseClient.from('attendance_logs').delete().eq('course_id', courseId).eq('session_name', payload.sessionName);
-                    // ثم حذف كل الجلسات بهذا الاسم
-                    await supabaseClient.from('sessions').delete().eq('course_id', courseId).eq('session_name', payload.sessionName);
-                } else if (adminUuid) {
-                    // المدير: حذف سجلات الحضور التي سجلها هو فقط
-                    await supabaseClient.from('attendance_logs').delete().eq('course_id', courseId).eq('session_name', payload.sessionName).eq('scanned_by', adminUuid);
-                    // ثم حذف الجلسة الخاصة به (التي أنشأها)
-                    await supabaseClient.from('sessions').delete().eq('course_id', courseId).eq('session_name', payload.sessionName).eq('creator_id', adminUuid);
-                }
-                return { status: 'success' };
+            if (type === 'toggleQR' || type === 'deleteSession') {
+                const res = await supabaseClient.rpc('secure_session_actions', {
+                    p_action: type, p_uni: uni, p_course: course, p_session: payload.sessionName || '',
+                    p_qr: payload.qrCode || '', p_role: role, p_admin_name: name
+                });
+                return res.error ? { status: 'error' } : res.data;
             }
 
             if (type === 'getCourseStudents') {
