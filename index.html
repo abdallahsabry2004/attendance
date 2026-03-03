@@ -391,59 +391,35 @@
             }
 
             if (type === 'getCourseStudents') {
-                const cRes = await supabaseClient.from('courses').select('id').eq('university', uni).eq('course_name', course).single();
-                if (cRes.error) return { status: 'error' };
-                const eRes = await supabaseClient.from('course_enrollments').select('users_data(full_name, national_id, password)').eq('course_id', cRes.data.id);
-                const students = (eRes.data || []).map((e, idx) => ({ name: e.users_data.full_name, id: e.users_data.national_id, pass: e.users_data.password, rowIndex: idx }));
-                return { status: 'success', students };
+                const res = await supabaseClient.rpc('secure_get_course_students', { p_uni: uni, p_course: course });
+                if (res.error) return { status: 'error' };
+                // إضافة الفهرس (rowIndex) للواجهة الأمامية
+                if (res.data && res.data.students) {
+                    res.data.students = res.data.students.map((s, idx) => ({ ...s, rowIndex: idx }));
+                }
+                return res.data;
             }
 
             if (type === 'manageStudent') {
-                const cRes = await supabaseClient.from('courses').select('id').eq('university', uni).eq('course_name', course).single();
-                if (cRes.error) return { status: 'error' };
-                const cId = cRes.data.id;
-                
                 const { actionType, studentData } = payload;
-                if (actionType === 'add' || actionType === 'edit') {
-                    let uRes = await supabaseClient.from('users_data').select('id').eq('national_id', studentData.id).maybeSingle();
-                    let uId;
-                    if (!uRes.data) {
-                        let ins = await supabaseClient.from('users_data').insert({ national_id: studentData.id, full_name: studentData.name, password: studentData.pass || '', role: 'student' }).select('id').single();
-                        if (ins.error) return { status: 'error' };
-                        uId = ins.data.id;
-                    } else {
-                        uId = uRes.data.id;
-                        if (actionType === 'edit') await supabaseClient.from('users_data').update({ full_name: studentData.name, password: studentData.pass || '' }).eq('id', uId);
-                    }
-                    if (actionType === 'add') await supabaseClient.from('course_enrollments').upsert({ course_id: cId, student_id: uId });
-                } else if (actionType === 'delete') {
-                    let uRes = await supabaseClient.from('users_data').select('id').eq('national_id', studentData.id).single();
-                    if (uRes.data) await supabaseClient.from('course_enrollments').delete().eq('course_id', cId).eq('student_id', uRes.data.id);
-                }
-                return { status: 'success' };
+                const res = await supabaseClient.rpc('secure_manage_student', {
+                    p_action: actionType,
+                    p_uni: uni,
+                    p_course: course,
+                    p_student_id: studentData.id,
+                    p_student_name: studentData.name,
+                    p_student_pass: studentData.pass || ''
+                });
+                return res.error ? { status: 'error' } : res.data;
             }
 
             if (type === 'batchAddStudents') {
-                const cRes = await supabaseClient.from('courses').select('id').eq('university', uni).eq('course_name', course).single();
-                if (cRes.error) return { status: 'error', message: 'المقرر غير موجود' };
-                const cId = cRes.data.id;
-                const students = payload.students;
-                let added = 0;
-                for (let stu of students) {
-                    if (!stu.name || !stu.id) continue;
-                    let uRes = await supabaseClient.from('users_data').select('id').eq('national_id', stu.id).maybeSingle();
-                    let uId;
-                    if (!uRes.data) {
-                        let ins = await supabaseClient.from('users_data').insert({ national_id: stu.id, full_name: stu.name, password: stu.pass || '', role: 'student' }).select('id').single();
-                        if (ins.error) continue;
-                        uId = ins.data.id;
-                    } else {
-                        uId = uRes.data.id;
-                    }
-                    await supabaseClient.from('course_enrollments').upsert({ course_id: cId, student_id: uId });
-                    added++;
-                }
-                return { status: 'success', message: `تمت إضافة ${added} طالب بنجاح` };
+                const res = await supabaseClient.rpc('secure_batch_add_students', {
+                    p_uni: uni,
+                    p_course: course,
+                    p_students: payload.students
+                });
+                return res.error ? { status: 'error', message: 'حدث خطأ أثناء الإضافة الجماعية' } : res.data;
             }
 
             if (type === 'getCourseWarnings') {
