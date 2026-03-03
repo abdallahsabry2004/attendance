@@ -84,39 +84,31 @@
     const runServer = async (action, payload = {}) => {
       try {
         if (action === 'login') {
-    // استخدام الدالة الآمنة (RPC) بدلاً من الاستعلام المباشر عن الجدول
-    const res = await supabaseClient.rpc('secure_login', { p_national_id: payload.nationalId });
-    
-    // التحقق من وجود خطأ أو عدم وجود المستخدم
-    if (res.error || !res.data || res.data.length === 0) {
-        return { status: 'error', message: 'الرقم القومي غير مسجل' };
-    }
-
-    const userData = res.data[0]; // البيانات العائدة من الدالة
-
-    if (!payload.password) {
-        if (!userData.stored_password || userData.stored_password.trim() === '') {
-            return { status: 'create_password', role: userData.user_role, name: userData.user_name };
+            const res = await supabaseClient.rpc('secure_login', { p_national_id: payload.nationalId });
+            if (res.error || !res.data || res.data.length === 0) {
+                return { status: 'error', message: 'الرقم القومي غير مسجل' };
+            }
+            const userData = res.data[0];
+            if (!payload.password) {
+                if (!userData.stored_password || userData.stored_password.trim() === '') {
+                    return { status: 'create_password', role: userData.user_role, name: userData.user_name };
+                }
+                return { status: 'require_password', role: userData.user_role, name: userData.user_name };
+            }
+            if (userData.stored_password !== payload.password) {
+                return { status: 'error', message: 'كلمة المرور غير صحيحة' };
+            }
+            return { status: 'success', role: userData.user_role, name: userData.user_name };
         }
-        return { status: 'require_password', role: userData.user_role, name: userData.user_name };
-    }
-    
-    if (userData.stored_password !== payload.password) {
-        return { status: 'error', message: 'كلمة المرور غير صحيحة' };
-    }
-    
-    return { status: 'success', role: userData.user_role, name: userData.user_name };
-}
 
         if (action === 'registerPassword' || action === 'changePassword') {
-            // استدعاء الدالة الآمنة بدلاً من التعديل المباشر
             const res = await supabaseClient.rpc('secure_change_password', { 
                 p_national_id: payload.nationalId, 
                 p_new_password: payload.newPassword,
                 p_allowed_roles: ['student', 'admin', 'moderator'] 
             });
             if (res.error) return { status: 'error', message: 'خطأ في الاتصال بالخادم' };
-            return res.data; // الدالة في السيرفر تعيد لنا الـ JSON الجاهز
+            return res.data;
         }
 
         if (action === 'changeModeratorPassword') {
@@ -132,63 +124,19 @@
         if (action === 'getStudentData') {
             const res = await supabaseClient.rpc('secure_get_student_courses', { p_national_id: payload.nationalId });
             if (res.error || !res.data) return { status: 'error', courses: [] };
-            
-            // تحويل البيانات القادمة إلى مصفوفة نصوص
             const coursesList = res.data.map(item => item.course_name);
             return { status: 'success', courses: coursesList };
         }
 
         if (action === 'scanAttendance') {
-            // السحر كله هنا: تم نقل كل الشروط المنطقية للحماية إلى السيرفر!
-            // الواجهة الأمامية ترسل فقط الرقم القومي وبيانات الـ QR
             const res = await supabaseClient.rpc('secure_scan_attendance', { 
                 p_national_id: payload.nationalId, 
                 p_qr_data: payload.qrData 
             });
-            
             if (res.error) return { status: 'error', message: 'خطأ في الخادم أثناء تسجيل الحضور' };
-            return res.data; // يعيد { status: 'success', message: '...' }
+            return res.data;
         }
-
-            let enrollRes = await supabaseClient.from('course_enrollments').select('id').eq('course_id', sessionData.course_id).eq('student_id', student.id).maybeSingle();
-            if (enrollRes.error || !enrollRes.data) return { status: 'error', message: 'غير مسجل في هذا المقرر' };
-
-            // حساب الغيابات السابقة
-            let prevSessRes = await supabaseClient.from('sessions').select('session_name, created_at').eq('course_id', sessionData.course_id).lt('created_at', sessionData.created_at);
-            let prevSessions = prevSessRes.data || [];
-            let uniquePrevNames = [...new Set(prevSessions.map(s => s.session_name))];
-            
-            if (uniquePrevNames.length > 0) {
-                let attRes = await supabaseClient.from('attendance_logs').select('session_name').eq('student_id', student.id).eq('course_id', sessionData.course_id).in('session_name', uniquePrevNames);
-                let attendedNames = new Set((attRes.data || []).map(a => a.session_name));
-                let absences = uniquePrevNames.length - attendedNames.size;
-                if (absences >= 4) {
-                    return { status: 'error', message: 'عذراً، لقد تم حرمانك من المقرر لتجاوز نسبة الغياب.' };
-                }
-            }
-
-            // التحقق من عدم تسجيل الحضور مسبقاً
-            let existRes = await supabaseClient.from('attendance_logs').select('scanned_by, users_data!scanned_by(full_name)').eq('course_id', sessionData.course_id).eq('session_name', sessionData.session_name).eq('student_id', student.id).maybeSingle();
-            if (existRes.data) {
-                let creatorName = sessionData.users_data ? sessionData.users_data.full_name : 'غير معروف';
-                let scannerName = existRes.data.users_data ? existRes.data.users_data.full_name : 'مدير آخر';
-                if (existRes.data.scanned_by === sessionData.creator_id) {
-                    return { status: 'error', message: `تم تسجيل الحضور مسبقاً مع ${creatorName}` };
-                } else {
-                    return { status: 'error', message: `مسجل حضور بالفعل مع ${scannerName}` };
-                }
-            }
-
-            await supabaseClient.from('attendance_logs').insert({ 
-                course_id: sessionData.course_id, 
-                session_name: sessionData.session_name, 
-                student_id: student.id, 
-                scanned_by: sessionData.creator_id,
-                is_manual: false 
-            });
-            return { status: 'success', message: 'تم تسجيل الحضور بنجاح' };
-        }
-
+        
         if (action === 'getStudentHistory') {
             const cRes = await supabaseClient.from('courses').select('id').eq('university', payload.uni).eq('course_name', payload.course).single();
             const sRes = await supabaseClient.from('users_data').select('id').eq('national_id', payload.nationalId).single();
