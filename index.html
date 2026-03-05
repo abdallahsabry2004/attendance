@@ -1573,7 +1573,8 @@
         const handleStopSession = async (s) => {
              const ok = await confirm({ title:'إيقاف الجلسة', message: 'هل تريد إيقاف عمل الرمز يدوياً؟', confirmText:'إيقاف' });
              if(ok) {
-                await runServer('adminAction', { type: 'toggleQR', qrCode: s.qrCode, newStatus: 'لا يعمل' });
+                // التعديل هنا: إرسال بيانات المقرر والمدير لكي يقبلها الخادم الآمن
+                await runServer('adminAction', { type: 'toggleQR', uni, course, role: user.role, name: user.name, qrCode: s.qrCode, newStatus: 'لا يعمل' });
                 showToast({ type:'info', message: 'تم إيقاف الجلسة' });
                 setManageQR(null);
                 load();
