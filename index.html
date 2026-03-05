@@ -1433,22 +1433,24 @@
 
         return (
             <div className="bg-white dark:bg-gray-800 p-6 rounded-3xl shadow-sm border border-gray-100 dark:border-gray-700 fade-in w-full">
-                <div className="flex flex-wrap gap-4 mb-6 no-print items-center border-b dark:border-gray-700 pb-6 w-full">
-                    <select className="border-2 border-gray-100 dark:border-gray-600 dark:bg-gray-700 dark:text-white p-3 rounded-2xl outline-none" value={uni} onChange={e => { setUni(e.target.value); setCourse(''); setSearched(false); }}>
+                <div className="flex flex-col sm:flex-row sm:flex-wrap gap-4 mb-6 no-print sm:items-center border-b dark:border-gray-700 pb-6 w-full">
+                    <select className="w-full sm:w-auto border-2 border-gray-100 dark:border-gray-600 dark:bg-gray-700 dark:text-white p-3 rounded-2xl outline-none" value={uni} onChange={e => { setUni(e.target.value); setCourse(''); setSearched(false); }}>
                         <option value="حكومي">حكومي</option><option value="أهلية">أهلية</option>
                     </select>
-                    <div className="flex-1 min-w-0">
+                    <div className="w-full sm:flex-1 min-w-0">
                         <select className="w-full border-2 border-gray-100 dark:border-gray-600 dark:bg-gray-700 dark:text-white p-3 rounded-2xl outline-none truncate" value={course} onChange={e => {setCourse(e.target.value); setSearched(false);}}>
                             <option value="">اختر المقرر...</option>
                             {(uniData[uni] || []).map(c => <option key={c} value={c}>{c}</option>)}
                         </select>
                     </div>
-                    <select className="border-2 border-gray-100 dark:border-gray-600 dark:bg-gray-700 dark:text-white p-3 rounded-2xl outline-none" value={wType} onChange={e => {setWType(e.target.value); setSearched(false);}}>
+                    <select className="w-full sm:w-auto border-2 border-gray-100 dark:border-gray-600 dark:bg-gray-700 dark:text-white p-3 rounded-2xl outline-none" value={wType} onChange={e => {setWType(e.target.value); setSearched(false);}}>
                         <option value="warning">إنذارات الغياب</option>
                         <option value="deprived">الحرمان</option>
                     </select>
-                    <Button loading={loading} onClick={load} className="bg-blue-600 text-white px-8 rounded-2xl font-bold">بحث</Button>
-                    <button onClick={() => window.print()} className="bg-gray-800 text-white px-6 rounded-2xl font-bold">طباعة</button>
+                    <div className="flex flex-col sm:flex-row gap-3 w-full sm:w-auto">
+                        <Button loading={loading} onClick={load} className="w-full sm:w-auto bg-blue-600 text-white px-8 py-3 rounded-2xl font-bold">بحث</Button>
+                        <button onClick={() => window.print()} className="w-full sm:w-auto bg-gray-800 text-white px-6 py-3 rounded-2xl font-bold">طباعة</button>
+                    </div>
                 </div>
 
                 {searched && (
@@ -1718,13 +1720,15 @@
 
         return (
             <div className="bg-white dark:bg-gray-800 p-6 rounded-3xl shadow-sm border border-gray-100 dark:border-gray-700 fade-in overflow-x-auto w-full">
-                <div className="flex flex-wrap gap-4 mb-8 no-print border-b dark:border-gray-700 pb-6 w-full">
-                    <select className="border-2 border-gray-100 dark:border-gray-600 dark:bg-gray-700 dark:text-white p-3 rounded-2xl outline-none" value={uni} onChange={e=>{setUni(e.target.value); setCourse('');}}><option value="حكومي">حكومي</option><option value="أهلية">أهلية</option></select>
-                    <div className="flex-1 min-w-0">
+                <div className="flex flex-col sm:flex-row sm:flex-wrap gap-4 mb-8 no-print sm:items-center border-b dark:border-gray-700 pb-6 w-full">
+                    <select className="w-full sm:w-auto border-2 border-gray-100 dark:border-gray-600 dark:bg-gray-700 dark:text-white p-3 rounded-2xl outline-none" value={uni} onChange={e=>{setUni(e.target.value); setCourse('');}}><option value="حكومي">حكومي</option><option value="أهلية">أهلية</option></select>
+                    <div className="w-full sm:flex-1 min-w-0">
                         <select className="w-full border-2 border-gray-100 dark:border-gray-600 dark:bg-gray-700 dark:text-white p-3 rounded-2xl outline-none truncate" value={course} onChange={e=>setCourse(e.target.value)}><option value="">اختر المقرر...</option>{(uniData[uni]||[]).map(c=><option key={c} value={c}>{c}</option>)}</select>
                     </div>
-                    <Button loading={loading} onClick={load} className="bg-blue-600 text-white px-8 rounded-2xl font-bold">عرض البيانات</Button>
-                    <button onClick={()=>window.print()} className="bg-gray-800 text-white px-8 rounded-2xl font-bold">طباعة</button>
+                    <div className="flex flex-col sm:flex-row gap-3 w-full sm:w-auto">
+                        <Button loading={loading} onClick={load} className="w-full sm:w-auto bg-blue-600 text-white px-8 py-3 rounded-2xl font-bold">عرض البيانات</Button>
+                        <button onClick={()=>window.print()} className="w-full sm:w-auto bg-gray-800 text-white px-8 py-3 rounded-2xl font-bold">طباعة</button>
+                    </div>
                 </div>
                 {data && (
                     <>
@@ -1793,22 +1797,23 @@
 
         return (
             <div className="bg-white dark:bg-gray-800 p-6 rounded-3xl shadow-sm border border-gray-100 dark:border-gray-700 fade-in overflow-x-auto w-full">
-                <div className="flex flex-wrap gap-4 mb-8 no-print border-b dark:border-gray-700 pb-6 w-full">
-                    <select className="border-2 border-gray-100 dark:border-gray-600 dark:bg-gray-700 dark:text-white p-3 rounded-2xl outline-none" value={uni} onChange={e=>{setUni(e.target.value); setCourse('');}}><option value="حكومي">حكومي</option><option value="أهلية">أهلية</option></select>
-                    <div className="flex-1 min-w-0">
+                <div className="flex flex-col sm:flex-row sm:flex-wrap gap-4 mb-8 no-print sm:items-center border-b dark:border-gray-700 pb-6 w-full">
+                    <select className="w-full sm:w-auto border-2 border-gray-100 dark:border-gray-600 dark:bg-gray-700 dark:text-white p-3 rounded-2xl outline-none" value={uni} onChange={e=>{setUni(e.target.value); setCourse('');}}><option value="حكومي">حكومي</option><option value="أهلية">أهلية</option></select>
+                    <div className="w-full sm:flex-1 min-w-0">
                         <select className="w-full border-2 border-gray-100 dark:border-gray-600 dark:bg-gray-700 dark:text-white p-3 rounded-2xl outline-none truncate" value={course} onChange={e=>setCourse(e.target.value)}><option value="">اختر المقرر...</option>{(uniData[uni]||[]).map(c=><option key={c} value={c}>{c}</option>)}</select>
                     </div>
                     {user.role === 'admin' && (
-                        <div className="flex-1 min-w-0">
+                        <div className="w-full sm:flex-1 min-w-0">
                             <select className="w-full border-2 border-gray-100 dark:border-gray-600 dark:bg-gray-700 dark:text-white p-3 rounded-2xl outline-none truncate" value={selectedMod} onChange={e=>setSelectedMod(e.target.value)}>
                                 <option value="">اختر المدير...</option>
                                 {courseMods.map(m=><option key={m} value={m}>{m}</option>)}
                             </select>
                         </div>
                     )}
-
-                    <Button loading={loading} onClick={load} className="bg-blue-600 text-white px-8 rounded-2xl font-bold">عرض التقرير المنفصل</Button>
-                    <button onClick={()=>window.print()} className="bg-gray-800 text-white px-8 rounded-2xl font-bold">طباعة</button>
+                    <div className="flex flex-col sm:flex-row gap-3 w-full sm:w-auto">
+                        <Button loading={loading} onClick={load} className="w-full sm:w-auto bg-blue-600 text-white px-8 py-3 rounded-2xl font-bold">عرض التقرير</Button>
+                        <button onClick={()=>window.print()} className="w-full sm:w-auto bg-gray-800 text-white px-8 py-3 rounded-2xl font-bold">طباعة</button>
+                    </div>
                 </div>
                 {data && (
                     <div className="fade-in">
@@ -1887,20 +1892,22 @@
 
         return (
             <div className="bg-white dark:bg-gray-800 p-6 rounded-3xl shadow-sm border border-gray-100 dark:border-gray-700 max-w-5xl mx-auto fade-in w-full">
-                 <div className="flex flex-wrap gap-4 mb-8 no-print items-center border-b dark:border-gray-700 pb-6 w-full">
-                    <select className="border-2 border-gray-100 dark:border-gray-600 dark:bg-gray-700 dark:text-white p-3 rounded-2xl outline-none" value={uni} onChange={e=>{setUni(e.target.value); setCourse('');}}><option value="حكومي">حكومي</option><option value="أهلية">أهلية</option></select>
-                    <div className="flex-1 min-w-0">
+                 <div className="flex flex-col sm:flex-row sm:flex-wrap gap-4 mb-8 no-print sm:items-center border-b dark:border-gray-700 pb-6 w-full">
+                    <select className="w-full sm:w-auto border-2 border-gray-100 dark:border-gray-600 dark:bg-gray-700 dark:text-white p-3 rounded-2xl outline-none" value={uni} onChange={e=>{setUni(e.target.value); setCourse('');}}><option value="حكومي">حكومي</option><option value="أهلية">أهلية</option></select>
+                    <div className="w-full sm:flex-1 min-w-0">
                         <select className="w-full border-2 border-gray-100 dark:border-gray-600 dark:bg-gray-700 dark:text-white p-3 rounded-2xl outline-none truncate" value={course} onChange={e=>setCourse(e.target.value)}><option value="">اختر المقرر...</option>{(uniData[uni]||[]).map(c=><option key={c} value={c}>{c}</option>)}</select>
                     </div>
-                    <div className="relative flex-1 min-w-0">
+                    <div className="relative w-full sm:flex-1 min-w-0">
                         <select className="w-full border-2 border-gray-100 dark:border-gray-600 dark:bg-gray-700 dark:text-white p-3 rounded-2xl outline-none truncate" value={selSession} onChange={e=>setSelSession(e.target.value)}>
                             <option value="">اختر الجلسة...</option>
                             {uniqueSessionNames.map((sessionName, idx)=><option key={idx} value={sessionName}>{sessionName}</option>)}
                         </select>
                         {loadingSessions && <div className="absolute left-10 top-4 loader-sm"></div>}
                     </div>
-                    <Button loading={loadingReport} onClick={load} className="bg-blue-600 text-white px-8 rounded-2xl font-bold">عرض</Button>
-                    <button onClick={()=>window.print()} className="bg-gray-800 text-white px-8 rounded-2xl font-bold">طباعة</button>
+                    <div className="flex flex-col sm:flex-row gap-3 w-full sm:w-auto">
+                        <Button loading={loadingReport} onClick={load} className="w-full sm:w-auto bg-blue-600 text-white px-8 py-3 rounded-2xl font-bold">عرض</Button>
+                        <button onClick={()=>window.print()} className="w-full sm:w-auto bg-gray-800 text-white px-8 py-3 rounded-2xl font-bold">طباعة</button>
+                    </div>
                 </div>
                
                  {report && (
@@ -1969,13 +1976,13 @@
 
         return (
             <div className="bg-white dark:bg-gray-800 p-6 rounded-3xl shadow-sm border border-gray-100 dark:border-gray-700 max-w-5xl mx-auto fade-in w-full">
-                 <div className="flex flex-wrap gap-4 mb-8 no-print border-b dark:border-gray-700 pb-6 w-full">
-                    <select className="border-2 border-gray-100 dark:border-gray-600 dark:bg-gray-700 dark:text-white p-3 rounded-2xl outline-none" value={uni} onChange={e=>{setUni(e.target.value); setCourse('');}}><option value="حكومي">حكومي</option><option value="أهلية">أهلية</option></select>
-                    <div className="flex-1 min-w-0">
+                 <div className="flex flex-col sm:flex-row sm:flex-wrap gap-4 mb-8 no-print sm:items-center border-b dark:border-gray-700 pb-6 w-full">
+                    <select className="w-full sm:w-auto border-2 border-gray-100 dark:border-gray-600 dark:bg-gray-700 dark:text-white p-3 rounded-2xl outline-none" value={uni} onChange={e=>{setUni(e.target.value); setCourse('');}}><option value="حكومي">حكومي</option><option value="أهلية">أهلية</option></select>
+                    <div className="w-full sm:flex-1 min-w-0">
                         <select className="w-full border-2 border-gray-100 dark:border-gray-600 dark:bg-gray-700 dark:text-white p-3 rounded-2xl outline-none truncate" value={course} onChange={e=>setCourse(e.target.value)}><option value="">اختر المقرر...</option>{(uniData[uni]||[]).map(c=><option key={c} value={c}>{c}</option>)}</select>
                     </div>
-                    <input type="text" className="border-2 border-gray-100 dark:border-gray-600 dark:bg-gray-700 dark:text-white p-3 rounded-2xl flex-1 min-w-0 outline-none focus:border-blue-400" placeholder="الاسم أو الرقم القومي" value={query} onChange={e=>setQuery(e.target.value)} />
-                    <Button loading={loading} onClick={search} className="bg-blue-600 text-white px-8 rounded-2xl font-bold">بحث</Button>
+                    <input type="text" className="w-full sm:flex-1 border-2 border-gray-100 dark:border-gray-600 dark:bg-gray-700 dark:text-white p-3 rounded-2xl min-w-0 outline-none focus:border-blue-400" placeholder="الاسم أو الرقم القومي" value={query} onChange={e=>setQuery(e.target.value)} />
+                    <Button loading={loading} onClick={search} className="w-full sm:w-auto bg-blue-600 text-white px-8 py-3 rounded-2xl font-bold">بحث</Button>
                 </div>
              
                 {results && (
