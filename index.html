@@ -1405,8 +1405,8 @@
                 </Modal>
 
                 <Modal isOpen={showBatchModal} onClose={() => setShowBatchModal(false)} title="إضافة دفعة طلاب">
-                    <p className="text-sm text-gray-500 dark:text-gray-400 mb-2">أدخل بيانات الطلاب كل طالب في سطر منفصل، بالصيغة: الاسم ثم الرقم القومي (14 رقم) ثم كلمة المرور (اختياري) - مثال: أحمد محمد علي 12345678901234 12345</p>
-                    <textarea rows="10" className="w-full p-3 border dark:border-gray-600 bg-white dark:bg-gray-700 dark:text-white rounded-xl mb-4 outline-none focus:ring-2 focus:ring-blue-400 font-mono text-sm" value={batchText} onChange={e => setBatchText(e.target.value)} placeholder="أحمد محمد علي 12345678901234 12345&#10;محمد سعيد 12345678901235"></textarea>
+                    <p className="text-sm text-gray-500 dark:text-gray-400 mb-2">أدخل بيانات الطلاب كل طالب في سطر منفصل، بالصيغة: الاسم ثم الرقم القومي (14 رقم) ثم كلمة المرور (اختياري) - مثال: عبدالله صبري علي 12345678901234 12345</p>
+                    <textarea rows="10" className="w-full p-3 border dark:border-gray-600 bg-white dark:bg-gray-700 dark:text-white rounded-xl mb-4 outline-none focus:ring-2 focus:ring-blue-400 font-mono text-sm" value={batchText} onChange={e => setBatchText(e.target.value)} placeholder="عبدالله صبري علي 12345678901234 12345&#10;محمد سعد علي 12345678901235"></textarea>
                     <Button loading={loading} onClick={handleBatchAdd} className="w-full bg-purple-600 text-white py-3 rounded-xl font-bold">إضافة الدفعة</Button>
                 </Modal>
             </div>
@@ -1512,7 +1512,7 @@
             <div className="bg-white dark:bg-gray-800 p-6 md:p-8 rounded-3xl shadow-sm border border-gray-100 dark:border-gray-700 max-w-4xl mx-auto fade-in">
                  <h2 className="text-2xl font-bold mb-8 text-gray-800 dark:text-gray-100">إدارة المديرين والمساعدين</h2>
                  <div className="flex flex-col sm:flex-row gap-3 mb-8">
-                     <input type="text" className="border-2 border-gray-100 dark:border-gray-600 dark:bg-gray-700 dark:text-white p-3 rounded-2xl flex-1 outline-none focus:border-blue-400" placeholder="الاسم (مثال: د. أحمد)" value={name} onChange={e=>setName(e.target.value)} />
+                     <input type="text" className="border-2 border-gray-100 dark:border-gray-600 dark:bg-gray-700 dark:text-white p-3 rounded-2xl flex-1 outline-none focus:border-blue-400" placeholder="الاسم (مثال: د. عبدالله)" value={name} onChange={e=>setName(e.target.value)} />
                      <input type="number" className="border-2 border-gray-100 dark:border-gray-600 dark:bg-gray-700 dark:text-white p-3 rounded-2xl flex-1 outline-none focus:border-blue-400" placeholder="الرقم القومي" value={id} onChange={e=>setId(e.target.value)} />
                      <input type="text" className="border-2 border-gray-100 dark:border-gray-600 dark:bg-gray-700 dark:text-white p-3 rounded-2xl flex-1 outline-none focus:border-blue-400" placeholder="كلمة المرور الافتراضية" value={password} onChange={e=>setPassword(e.target.value)} />
                      <Button loading={loadingAdd} onClick={handleAdd} className="bg-green-600 text-white px-8 rounded-2xl font-bold">إنشاء مدير</Button>
