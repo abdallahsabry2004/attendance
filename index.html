@@ -295,8 +295,13 @@
 
             if (type === 'toggleQR' || type === 'deleteSession') {
                 const res = await supabaseClient.rpc('secure_session_actions', {
-                    p_action: type, p_uni: uni, p_course: course, p_session: payload.sessionName || '',
-                    p_qr: payload.qrCode || '', p_role: role, p_admin_name: name
+                    p_action: type, 
+                    p_uni: uni, 
+                    p_course: course, 
+                    p_session: payload.sessionName || '',
+                    p_qr: payload.qrCode || '', 
+                    p_role: role, 
+                    p_admin_name: name
                 });
                 return res.error ? { status: 'error' } : res.data;
             }
