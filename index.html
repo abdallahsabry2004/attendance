@@ -1575,10 +1575,11 @@
              }
         };
 
-        const handleChangeTime = async (s) => {
+                const handleChangeTime = async (s) => {
             const newTime = prompt("أدخل الوقت الجديد بالدقائق:", "30");
             if(!newTime) return;
-            const res = await runServer('adminAction', { type: 'changeQR', uni, course, duration: newTime, sessionNameOverride: s.session, name: user.name, role: user.role });
+            // السطر التالي تم تعديله لإرسال الرمز القديم للسيرفر
+            const res = await runServer('adminAction', { type: 'changeQR', uni, course, duration: newTime, sessionNameOverride: s.session, originalQrCode: s.qrCode, name: user.name, role: user.role });
             if(res && res.status === 'success') {
                 showToast({ type: 'success', message: 'تم تحديث وقت الجلسة' });
                 setManageQR(null);
@@ -1589,13 +1590,15 @@
         const handleCreateNewQR = async (s) => {
             const newTime = prompt("أدخل وقت الرمز الجديد بالدقائق:", "30");
             if(!newTime) return;
-            const res = await runServer('adminAction', { type: 'changeQR', uni, course, duration: newTime, sessionNameOverride: s.session, name: user.name, role: user.role });
+            // السطر التالي تم تعديله لإرسال الرمز القديم للسيرفر ليعرف السيرفر أي جلسة سيعيد تفعيلها
+            const res = await runServer('adminAction', { type: 'changeQR', uni, course, duration: newTime, sessionNameOverride: s.session, originalQrCode: s.qrCode, name: user.name, role: user.role });
             if(res && res.status === 'success') {
                 showToast({ type: 'success', message: 'تم تفعيل رمز جديد' });
                 setManageQR(null);
                 load();
             }
         };
+
 
         return (
             <div className="bg-white dark:bg-gray-800 p-6 rounded-3xl shadow-sm border border-gray-100 dark:border-gray-700 fade-in w-full">
